@@ -67,6 +67,37 @@ choice and rationale will be logged in `docs/DECISIONS.md` (or this file) as the
 progresses, along with anything notably good/bad about the dogfooding experience, since
 demo day asks for that explicitly.
 
+## Hosted Telnyx MCP server (API knowledge/tool access for the coding model)
+
+The `@telnyx/opencode` plugin only registers Telnyx as a **model provider** — it gives
+OpenCode a Telnyx-hosted LLM to run as, but that model has no special knowledge of
+Telnyx's own APIs beyond its training data. The Agent Skills that inject live Telnyx API
+docs into context (`/plugin install telnyx-ai@telnyx`, etc.) are **Claude Code / Cursor
+marketplace plugins**, not npm packages, and don't work in OpenCode — there's no
+"telnyx-ai" npm plugin to install here.
+
+To ground the coding model in real Telnyx API access instead, we wired in Telnyx's
+hosted MCP server directly, in `.opencode/opencode.json`:
+
+```json
+{
+  "mcp": {
+    "telnyx": {
+      "type": "remote",
+      "url": "https://api.telnyx.com/v2/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer {env:TELNYX_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+This reuses the same `TELNYX_API_KEY` environment variable used for `opencode auth
+login`. With it set, the coding model can call real Telnyx API tools (not just guess
+from training data) while we build the assistant/workflow/Edge Compute pieces.
+
 ## Troubleshooting (from upstream README)
 
 - `Unknown provider "telnyx"` → plugin not loaded; check `opencode.json`, restart
