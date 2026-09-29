@@ -2,15 +2,5 @@
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     "@telnyx/opencode"
-  ],
-  "mcp": {
-    "telnyx": {
-      "type": "remote",
-      "url": "https://api.telnyx.com/v2/mcp",
-      "enabled": true,
-      "headers": {
-        "Authorization": "Bearer {env:TELNYX_API_KEY}"
-      }
-    }
-  }
+  ]
 }

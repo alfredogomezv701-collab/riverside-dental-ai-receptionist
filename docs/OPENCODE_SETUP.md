@@ -76,27 +76,23 @@ docs into context (`/plugin install telnyx-ai@telnyx`, etc.) are **Claude Code /
 marketplace plugins**, not npm packages, and don't work in OpenCode — there's no
 "telnyx-ai" npm plugin to install here.
 
-To ground the coding model in real Telnyx API access instead, we wired in Telnyx's
-hosted MCP server directly, in `.opencode/opencode.json`:
+To ground the coding model in real Telnyx API access instead, add Telnyx's hosted MCP
+server (`https://api.telnyx.com/v2/mcp`) to `.opencode/opencode.json` as a remote MCP
+server with a bearer-token header sourced from an env var, e.g. `{env:TELNYX_API_KEY}`.
+(Not currently wired into this repo's config — add it however you'd like it set up.)
 
-```json
-{
-  "mcp": {
-    "telnyx": {
-      "type": "remote",
-      "url": "https://api.telnyx.com/v2/mcp",
-      "enabled": true,
-      "headers": {
-        "Authorization": "Bearer {env:TELNYX_API_KEY}"
-      }
-    }
-  }
-}
-```
-
-This reuses the same `TELNYX_API_KEY` environment variable used for `opencode auth
-login`. With it set, the coding model can call real Telnyx API tools (not just guess
-from training data) while we build the assistant/workflow/Edge Compute pieces.
+Two things worth knowing going in:
+- **`opencode mcp auth <name>` only applies to OAuth-based MCP servers.** A header-auth
+  remote server (static `Authorization: Bearer ...`) has no OAuth flow, so that command
+  will say "No OAuth-capable MCP servers configured" — that's expected, not an error.
+- **OpenCode does not auto-load `.env`.** Any `{env:VAR}` substitution in the config only
+  resolves if that variable is actually exported in the shell that launches `opencode` —
+  a value sitting in `.env` isn't picked up automatically. Check connection status with:
+  ```bash
+  opencode mcp list
+  ```
+  `telnyx` should show `✓ connected`; `⚠ needs authentication` means the env var isn't
+  exported in that shell.
 
 ## Troubleshooting (from upstream README)
 
