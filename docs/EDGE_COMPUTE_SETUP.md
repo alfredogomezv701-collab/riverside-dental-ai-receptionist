@@ -129,8 +129,8 @@ telnyx-edge types
 ```
 
 This generates `telnyx-env.d.ts` typing `env.CACHE` as `KvNamespace`. Used for:
-- `avail:{service}:{date}` — cached availability lookups (short TTL)
-- `flag:waitlist_mode:{service}:{date}` — feature flag read by the variable-comparison
+- `avail/{service}/{date}` — cached availability lookups (short TTL)
+- `flag/waitlist_mode` — feature flag read by the variable-comparison
   edge
 
 ## Observability commands (challenge requirement 5)

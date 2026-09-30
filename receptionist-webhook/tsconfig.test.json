@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": false, "outDir": "./dist-test", "rootDir": ".." },
+  "include": ["telnyx-env.d.ts", "src/**/*.ts", "test/**/*.ts", "../day-slot-actor/src/day_slot_actor.ts", "../day-slot-actor/test/mock_actor_context.ts"]
+}

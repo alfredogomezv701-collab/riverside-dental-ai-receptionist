@@ -1,0 +1,28 @@
+{
+  "name": "receptionist-mcp",
+  "version": "1.0.0",
+  "description": "Riverside Dental receptionist MCP server — TypeScript Edge Function",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "build": "node -e \"console.log('prebuilt: server.mjs (run npm run bundle before ship)')\"",
+    "start": "node server.mjs",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/receptionist-mcp/test/**/*.test.js",
+    "bundle": "tsc --noEmit && esbuild index.ts --bundle --platform=node --format=esm --packages=external --outfile=server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@telnyx/edge-runtime": "^0.16.0",
+    "express": "^4.21.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,11 @@
+name = "day-slot-actor"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+
+[[actors]]
+binding = "DAY_SLOT"
+type = "DaySlotActor"
+
+[edge_compute]
+func_id = "4cabbc85-0ef6-402a-a453-c1a59e991852"
+func_name = "day-slot-actor"

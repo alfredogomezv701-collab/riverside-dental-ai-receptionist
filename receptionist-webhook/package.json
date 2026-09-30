@@ -1,0 +1,21 @@
+{
+  "name": "receptionist-webhook",
+  "version": "0.1.0",
+  "description": "Dynamic-variables webhook + DaySlotActor HTTP proxy",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/receptionist-webhook/test/**/*.test.js"
+  },
+  "dependencies": {
+    "@telnyx/edge-runtime": "^0.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

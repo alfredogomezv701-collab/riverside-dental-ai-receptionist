@@ -1,0 +1,28 @@
+name = "receptionist-webhook"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+
+# Reference binding: DaySlotActor is OWNED by the day-slot-actor function; this
+# function ships no class code, just a handle to the same actor type (shared actors).
+[[actors]]
+binding = "DAY_SLOT"
+type = "DaySlotActor"
+
+[storage.kv.CACHE]
+id = "3c826291-8337-4141-821c-080f0bb32c28"
+
+# Bearer token receptionist-mcp presents on /actor/*.
+# telnyx-edge secrets add ACTOR_PROXY_SECRET "$(openssl rand -hex 32)"
+[[secrets]]
+binding = "ACTOR_PROXY_SECRET"
+name = "ACTOR_PROXY_SECRET"
+
+# Token the assistants present as ?token= on the dynamic-variables webhook URL.
+# telnyx-edge secrets add WEBHOOK_TOKEN "$(openssl rand -hex 32)"
+[[secrets]]
+binding = "WEBHOOK_TOKEN"
+name = "WEBHOOK_TOKEN"
+
+[edge_compute]
+func_id = "baaf7d07-b026-4449-a010-6a001518cebf"
+func_name = "receptionist-webhook"

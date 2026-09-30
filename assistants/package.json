@@ -1,0 +1,10 @@
+{
+  "name": "assistants",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/flow.test.mjs",
+    "test:live": "node --test --test-concurrency=1 test/live.test.mjs",
+    "test:probe": "node --test --test-concurrency=1 --test-name-pattern=\"deployed edge functions|backend end to end\" test/live.test.mjs"
+  }
+}

@@ -1,0 +1,16 @@
+[edge_compute]
+func_id = "f366a7db-090c-4e89-8d48-059249ca50b5"
+func_name = "receptionist-mcp"
+
+# For environment variables and secrets:
+# Use telnyx-edge secrets add <name> <value>
+# Secrets are injected as environment variables into all your functions
+#   SHARED_SECRET     — inbound MCP bearer token (telnyx-edge secrets add SHARED_SECRET "$(openssl rand -hex 32)")
+#   TELNYX_API_KEY     — only if a tool calls the Telnyx API directly
+#   ACTOR_PROXY_URL    — receptionist-webhook's invoke URL (holds the DAY_SLOT actor binding; this
+#                        classic project can't bind an actor directly — see docs/ARCHITECTURE.md,
+#                        "Cross-function actor access")
+#   ACTOR_PROXY_SECRET — bearer token for calling receptionist-webhook's /actor/* routes
+
+[storage.kv.CACHE]
+id = "3c826291-8337-4141-821c-080f0bb32c28"
