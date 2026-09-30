@@ -7,7 +7,8 @@ returning callers are recognised by phone number.
 
 | | |
 |---|---|
-| **Phone number** | `TODO: fill in once assigned to the Front Desk assistant` |
+| **Phone number** | `+1 (218) 506-9277` |
+| **Portal-assigned** | Yes (inbound calls currently fail - debugging in progress) |
 | **Dynamic-variables webhook** | `https://receptionist-webhook-baaf7d07-b.telnyxcompute.com` (`POST /?token=...`, token-protected) |
 | **MCP server** | `https://receptionist-mcp-f366a7db-0.telnyxcompute.com/mcp` (bearer-protected) |
 | **Actor owner function** | `https://day-slot-actor-4cabbc85-0.telnyxcompute.com` (no public surface; called through the webhook function) |

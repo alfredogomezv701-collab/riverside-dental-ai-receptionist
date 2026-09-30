@@ -36,6 +36,13 @@ ignores the token; harmless (nobody is calling yet), but do the ships back to ba
 - [x] `node assistants/update.mjs --apply` and `npm run test:live`: 30/30 green
 - [ ] Portal > AI Assistants: three assistants listed; Front Desk's Workflow tab renders nodes/edges/hand-offs and is editable
 - [ ] Assign the phone number to the **Front Desk** assistant only; put it in the README
+- [ ] **Real calls are refused until the caller's number is verified (or the account tier is upgraded).** Every inbound PSTN call
+      showed up as a carrier record with `hangup_cause: USER_BUSY`, SIP 486, `telnyx_error_code: D61` ("Account tier requires verified
+      numbers"), no `connection_id` and zero duration; the Portal web test works because it bypasses the phone network. The account has
+      **no verified numbers** (`GET /v2/verified_numbers` is empty). Fix: Portal > Numbers > Verified Numbers, verify the cell phone(s)
+      that will call (and the number for the Portal's "Call me" button), or upgrade the account tier. Then re-test a call and confirm a
+      `call_initiated` event and an `ai-voice-assistant` record appear (`GET /v2/call_events`, `GET /v2/detail_records`).
+      A demo audience's phones will ALSO be refused unless the tier is upgraded, so sort this out before demo day
 
 **B. Real phone calls** (keep `telnyx-edge logs receptionist-webhook --type runtime --tail` open)
 - [ ] New caller, happy path: disclosure heard verbatim **once** (chat showed a repeat quirk after a hand-off), hand-off to
@@ -115,6 +122,28 @@ Telnyx-hosted model. Suggested order: 1, 2, 3, then 5 if time allows, plus the m
 MCP tools can't be scoped per node (only shared tools can), so scoping is per assistant. The calendar grid is a mock; bookings
 are real; KV is the system of record. `patient/{phone10}` is a non-atomic read-modify-write. Chat and voice differ (webhook per
 turn vs per call). The clinic time zone is fixed. Full list in the README.
+
+## Edge-case routing audit (prompt nodes without fallback edges)
+
+These prompt nodes have **only LLM-conditioned edges** and no deterministic fallback. If the caller says something ambiguous
+the model does not confidently classify, the conversation stays on the node and the assistant goes silent.
+
+| Assistant | Node | Risk | Scenario |
+|---|---|---|---|
+| Front Desk | `n_intent` / `n_intent_returning` | **Medium** | Caller says something ambiguous like "I'm not sure what I need" or "Can you tell me what you do?" |
+| Front Desk | `n_faq` | Low | Caller gives a follow-up thank-you or asks another FAQ after the first answer |
+| Scheduling | `n_collect` | Low | Caller says something off-script like "This is a test call" or gives random input |
+| Scheduling | `n_offer` | Low | Caller says "I'll think about it" or "Let me call back later" |
+| Scheduling | `n_book` | **Medium** | Tool returns an unexpected error (network timeout, 500, etc.) that is not `slot_already_booked` / `slot_unavailable` / `invalid_slot` |
+| Scheduling | `n_manage` | **Medium** | Caller changes topic mid-cancel/reschedule, or tool returns an unexpected error |
+| **Billing** | `n_billing` | **HIGH** | Caller asks a general FAQ (hours, location) — Billing has **no FAQ node and no handoff to Front Desk**, so the call gets stuck |
+
+Fixes to apply before demo day:
+- [ ] Add `e_intent_unclear` → loop back or ask for clarification on Front Desk intent nodes
+- [ ] Add `e_faq_unclear` → stay on FAQ or route to goodbye on Front Desk FAQ node
+- [ ] Add `e_book_unclear` → retry or escalate on Scheduling book node (covers unexpected tool errors)
+- [ ] Add `e_manage_unclear` → retry or escalate on Scheduling manage node
+- [ ] **Add `e_billing_faq` → handoff to Front Desk** so Billing can route general questions out
 
 ## Live URLs
 

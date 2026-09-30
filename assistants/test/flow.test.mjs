@@ -218,6 +218,16 @@ describe('all assistants', () => {
     }
   });
 
+  // The Portal's "Call me" form is pre-filled from these defaults and renders "" as null, which the
+  // outbound-call API rejects ("Value for key 'next_appointment' must be a boolean, string, or integer").
+  it('never declares an empty default variable (the Portal would send null and the call API would refuse it)', () => {
+    for (const [n, a] of Object.entries(all)) {
+      for (const [k, v] of Object.entries(a.dynamic_variables)) {
+        assert.ok(typeof v === 'string' && v.trim() !== '', `${n}: default for ${k} is empty`);
+      }
+    }
+  });
+
   it('use distinct voices per persona', () => {
     const voices = Object.values(all).map((a) => a.voice_settings.voice);
     assert.equal(new Set(voices).size, voices.length);
