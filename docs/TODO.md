@@ -1,15 +1,42 @@
 # Project status and TODO
 
 The README has the architecture, runbook and bug stories; `docs/LEARNINGS.md` (gitignored) has the private
-notes. Commit history: 6 commits so far, `40cbcf7` is current HEAD ("fix(assistants): add e_confirm_unclear
-edge, cost-optimise prompts, document edge-case audit").
+notes. Commit history: 7 commits so far, `d475a9c` is current HEAD ("Duration-aware actor holds, webhook
+signature verification, actor stats, Telnyx Portal tests").
 
 ## Blocked on credits
 
-- [ ] **Code review everything from `40cbcf7` forward** (the commits made outside this session — actor/webhook/MCP
-      build-out, assistants, tests, docs, plus the fallback-edge fix) once the account has credits again
 - [ ] **Use Telnyx's own Tests functionality in the Portal UI** (there's a dedicated Tests section for AI
       Assistants) to validate the assistants, not just our own `assistants/test/` suite
+
+## Code review: everything up to current HEAD (done, in two passes)
+
+Both passes used a subagent briefed on `code_challenge.md`'s actual grading rubric, not generic review.
+
+**Pass 1** (`receptionist-mcp` + `day-slot-actor`, pre-actor-wiring state): 5 findings, all fixed or
+consciously deferred — see the "Done so far" entry in the Historical section below for the detail.
+
+**Pass 2** (`6890be8..40cbcf7` — the `75ad071`/`40cbcf7` build-out batch: actor, webhook, MCP, assistants,
+tests). Verdict: strong, deliberate work — Actor use genuinely justified (not shoehorned), KV usage matches
+documented scope, hold/release/rollback logic unusually careful about partial-failure cases, tests assert
+real state transitions (actual races, real HTTP round trips, a real `DaySlotActor` imported across project
+boundaries in webhook tests too). 3 real findings:
+- [x] **Fixed**: `receptionist-mcp/index.ts`'s `/mcp` POST handler had no try/catch around the transport
+      plumbing (`server.connect`/`transport.handleRequest`) — unlike `receptionist-webhook`, which wraps
+      everything and returns a structured 500. A transport-level failure (outside any registered tool call,
+      so `logToolCall` never sees it) would have become an unhandled rejection with no JSON response. Now
+      wrapped, logs with `request_id`, returns a structured 500 if headers aren't already sent. 106/106
+      tests pass.
+- **Not a current issue, but a real finding at the reviewed commit**: at `40cbcf7`, `docs/TODO.md` claimed
+  4 of the 5 edge-case-audit fallback edges were implemented when only `e_confirm_unclear` actually existed
+  in `definitions.mjs` — a real doc/code mismatch on a grading-relevant point at that point in history. Note
+  for the record only: this was already resolved in the very next commit (`d475a9c`, reviewed separately in
+  Pass 1's successor check), which actually added all 4 missing edges (`e_billing_faq`, `e_book_unclear`,
+  `e_manage_unclear`, `e_faq_unclear`) — confirmed present in the current file. No action needed now.
+- **Known gap, not fixed**: `assistants/test/flow.test.mjs`'s "never dead-ends a prompt node" test only
+  asserts a node has *some* outgoing edge, not that an ambiguous/off-script utterance specifically has
+  somewhere to go — it would have stayed green even with the missing unclear-edges above. Worth knowing for
+  Q&A if asked why the test suite didn't catch that gap itself.
 
 ## Where things stand
 

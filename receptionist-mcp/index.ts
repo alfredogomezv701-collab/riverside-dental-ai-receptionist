@@ -7,6 +7,7 @@ import { registerBookAppointment } from './src/tools/book_appointment_handler.js
 import { registerCancelOrReschedule } from './src/tools/cancel_or_reschedule_appointment_handler.js';
 import { createHttpDaySlotNamespace } from './src/actors/day_slot_http_client.js';
 import { bearerMatches } from './src/auth.js';
+import { redact } from './src/log.js';
 
 // receptionist-mcp is a classic (func.toml) project and can't hold the
 // DAY_SLOT actor binding directly (see src/actors/day_slot_http_client.ts).
@@ -90,8 +91,28 @@ app.post('/mcp', async (req, res) => {
     transport.close();
     server.close();
   });
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        service: 'receptionist-mcp',
+        request_id: requestId,
+        outcome: 'transport_error',
+        error: redact(err instanceof Error ? err.message : String(err)),
+      }),
+    );
+    // Transport failures (malformed Streamable-HTTP framing, connect() throwing, etc.) happen
+    // outside any registered tool handler, so logToolCall never sees them — this is the only
+    // place that can. A thrown tool error is already turned into a JSON-RPC error result by the
+    // SDK before it gets here, so headers are typically still open at this point.
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'internal error', request_id: requestId });
+    }
+  }
 });
 
 app.listen(port, () => {
