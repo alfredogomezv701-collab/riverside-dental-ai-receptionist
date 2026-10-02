@@ -19,9 +19,10 @@ export interface DaySlotReleaseResult {
   reason?: 'not_held_by_caller';
 }
 export interface DaySlotStub {
-  holdSlot(start: string, callerId: string, holdDurationMs?: number): Promise<DaySlotHoldResult>;
+  holdSlot(start: string, callerId: string, durationMinutes?: number, holdDurationMs?: number): Promise<DaySlotHoldResult>;
   confirmSlot(start: string, callerId: string): Promise<DaySlotConfirmResult>;
   releaseSlot(start: string, callerId: string): Promise<DaySlotReleaseResult>;
+  getStats(): Promise<{ conversions: number; expirations: number; conversionRate: string }>;
 }
 export interface DaySlotNamespace {
   idFromName(name: string): DaySlotStub;

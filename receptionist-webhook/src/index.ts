@@ -3,6 +3,7 @@ import { handleActorRoute } from './actor_routes.js';
 import type { DaySlotNamespace } from './day_slot_binding.js';
 import { logEvent, maskPhone, redact } from './log.js';
 import { lookupPatient } from './patient_lookup.js';
+import { verifyTelnyxWebhook } from './verify_webhook.js';
 
 export interface WebhookEnv {
   CACHE: KvNamespace;
@@ -32,6 +33,17 @@ async function authorised(env: WebhookEnv, handle: string, presented: string): P
   return secret !== '' && (await safeEqual(presented, secret));
 }
 
+const VERSION = process.env.VERSION || 'dev';
+
+async function secretPresent(env: WebhookEnv, handle: string): Promise<boolean> {
+  try {
+    const v = await env.SECRETS.get(handle);
+    return v !== '' && v !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 export async function handleRequest(req: Request, env: WebhookEnv): Promise<Response> {
   const started = Date.now();
   const url = new URL(req.url);
@@ -43,18 +55,45 @@ export async function handleRequest(req: Request, env: WebhookEnv): Promise<Resp
 
   try {
     if (req.method === 'GET' && url.pathname === '/health') {
-      return new Response('OK');
+      return Response.json({
+        status: 'ok',
+        version: VERSION,
+        secrets: {
+          WEBHOOK_TOKEN: await secretPresent(env, 'WEBHOOK_TOKEN'),
+          ACTOR_PROXY_SECRET: await secretPresent(env, 'ACTOR_PROXY_SECRET'),
+          TELNYX_WEBHOOK_PUBLIC_KEY: await secretPresent(env, 'TELNYX_WEBHOOK_PUBLIC_KEY'),
+        },
+      });
     }
 
     // Assistant dynamic-variables webhook (event_type assistant.initialization). It returns a patient's
     // name and appointment details for whatever number it is asked about, so it is NOT public: the
-    // assistants are configured with a URL carrying ?token=<WEBHOOK_TOKEN>. (Telnyx's own webhook
-    // signature is a further hardening step - see docs/TODO.md.)
+    // assistants are configured with a URL carrying ?token=<WEBHOOK_TOKEN>. Telnyx's own Ed25519 webhook
+    // signature is verified first (defence in depth); the URL token is then checked as a second layer.
     if (req.method === 'POST' && url.pathname === '/') {
+      const bodyBuffer = await req.arrayBuffer();
+
+      // Layer 1: Ed25519 webhook signature from Telnyx
+      const publicKeyPem = await env.SECRETS.get('TELNYX_WEBHOOK_PUBLIC_KEY').catch(() => '');
+      if (publicKeyPem) {
+        const sig = req.headers.get('telnyx-signature-ed25519');
+        const ts = req.headers.get('telnyx-timestamp');
+        const verifyResult = await verifyTelnyxWebhook(publicKeyPem, bodyBuffer, sig, ts);
+        if (!verifyResult.valid) {
+          return respond(401, { error: 'Unauthorized', reason: verifyResult.reason }, {
+            route: 'dynamic_variables',
+            outcome: 'unauthorized_webhook_signature',
+            reason: verifyResult.reason ?? 'unknown',
+          });
+        }
+      }
+
+      // Layer 2: URL token
       if (!(await authorised(env, 'WEBHOOK_TOKEN', url.searchParams.get('token') ?? ''))) {
         return respond(401, { error: 'Unauthorized' }, { route: 'dynamic_variables', outcome: 'unauthorized' });
       }
-      const body = (await req.json().catch(() => ({}))) as {
+
+      const body = JSON.parse(new TextDecoder().decode(bodyBuffer)) as {
         data?: { payload?: { telnyx_end_user_target?: string; call_control_id?: string } };
       };
       const payload = body.data?.payload ?? {};
@@ -74,6 +113,19 @@ export async function handleRequest(req: Request, env: WebhookEnv): Promise<Resp
     }
 
     // Internal actor proxy for receptionist-mcp.
+    if (req.method === 'GET' && url.pathname === '/actor/stats') {
+      const date = url.searchParams.get('date');
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return respond(400, { error: 'invalid date' }, { route: 'actor/stats', outcome: 'bad_request' });
+      }
+      const bearer = (req.headers.get('authorization') ?? '').replace(/^Bearer /, '');
+      if (!(await authorised(env, 'ACTOR_PROXY_SECRET', bearer))) {
+        return respond(401, { error: 'Unauthorized' }, { route: 'actor/stats', outcome: 'unauthorized' });
+      }
+      const stats = await env.DAY_SLOT.idFromName(date).getStats();
+      return respond(200, stats, { route: 'actor/stats', outcome: 'ok' });
+    }
+
     const actorMatch = /^\/actor\/([a-z]+)$/.exec(url.pathname);
     if (req.method === 'POST' && actorMatch) {
       const route = `actor/${actorMatch[1]}`;

@@ -41,12 +41,20 @@ export function createHttpDaySlotNamespace(baseUrl: string, sharedSecret: string
     idFromName(name: string): DaySlotStub {
       return {
         id: name,
-        holdSlot: (start, callerId, holdDurationMs) =>
-          post<DaySlotHoldResult>('/actor/hold', { date: name, start, callerId, holdDurationMs }),
+        holdSlot: (start, callerId, durationMinutes, holdDurationMs) =>
+          post<DaySlotHoldResult>('/actor/hold', { date: name, start, callerId, durationMinutes, holdDurationMs }),
         confirmSlot: (start, callerId) =>
           post<DaySlotConfirmResult>('/actor/confirm', { date: name, start, callerId }),
         releaseSlot: (start, callerId) =>
           post<DaySlotReleaseResult>('/actor/release', { date: name, start, callerId }),
+        getStats: async () => {
+          // /actor/stats is a GET route on the actor's own HTTP surface, not proxied via POST.
+          const res = await fetch(new URL(`/actor/stats?date=${encodeURIComponent(name)}`, baseUrl), {
+            headers: { authorization: `Bearer ${sharedSecret}`, ...(requestId ? { 'x-request-id': requestId } : {}) },
+          });
+          if (!res.ok) throw new Error(`actor proxy /actor/stats responded ${res.status}`);
+          return (await res.json()) as { conversions: number; expirations: number; conversionRate: string };
+        },
       };
     },
   };

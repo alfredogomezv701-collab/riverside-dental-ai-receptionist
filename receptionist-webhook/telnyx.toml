@@ -23,6 +23,12 @@ name = "ACTOR_PROXY_SECRET"
 binding = "WEBHOOK_TOKEN"
 name = "WEBHOOK_TOKEN"
 
+# Telnyx public key for webhook signature verification (Ed25519).
+# Set via: telnyx-edge secrets add TELNYX_WEBHOOK_PUBLIC_KEY "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+[[secrets]]
+binding = "TELNYX_WEBHOOK_PUBLIC_KEY"
+name = "TELNYX_WEBHOOK_PUBLIC_KEY"
+
 [edge_compute]
 func_id = "baaf7d07-b026-4449-a010-6a001518cebf"
 func_name = "receptionist-webhook"

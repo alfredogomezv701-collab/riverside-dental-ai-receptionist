@@ -63,7 +63,7 @@ const COMMON_RULES = `Keep replies to 1-2 short sentences. No symbols or markdow
 // Billing has no tools. Given the ids it also gets a small flow so a caller who came for insurance
 // but also wants an appointment can be handed to Scheduling instead of being stuck (without ids,
 // e.g. at first creation, it is a plain prompt-only assistant and update.mjs adds the flow).
-export function billingAssistant({ webhookUrl, hangupToolId, schedulingId }) {
+export function billingAssistant({ webhookUrl, hangupToolId, schedulingId, frontDeskId }) {
   const flow =
     hangupToolId && schedulingId
       ? {
@@ -92,6 +92,7 @@ export function billingAssistant({ webhookUrl, hangupToolId, schedulingId }) {
                 llm('The caller wants to book, change or cancel an appointment.')),
               edge('e_billing_done', 'n_billing', toNode('n_goodbye'),
                 llm('The caller has no more questions.')),
+              edge('e_billing_faq', 'n_billing', toAssistant(frontDeskId, 'unified'), dflt),
               edge('e_escalate_end', 'n_escalate', toNode('n_hangup'), dflt),
               edge('e_goodbye_end', 'n_goodbye', toNode('n_hangup'), dflt),
             ],
@@ -203,6 +204,7 @@ export function schedulingAssistant({ webhookUrl, mcpServerId, hangupToolId, fro
       llm('book_appointment returned confirmed true.')),
     edge('e_book_retry', 'n_book', toNode('n_offer'),
       llm('book_appointment returned slot_already_booked, slot_unavailable or invalid_slot.')),
+    edge('e_book_unclear', 'n_book', toNode('n_offer'), dflt),
     edge('e_manage_done', 'n_manage', toNode('n_closing_manage'),
       llm('The appointment was cancelled or rescheduled successfully.')),
     edge('e_manage_retry', 'n_manage', toNode('n_offer'),
@@ -211,6 +213,7 @@ export function schedulingAssistant({ webhookUrl, mcpServerId, hangupToolId, fro
       llm('The tool reported appointment_not_found, or the caller cannot identify which appointment they mean.')),
     edge('e_manage_back', 'n_manage', toNode('n_collect'),
       llm('The caller changed their mind and wants something else.')),
+    edge('e_manage_unclear', 'n_manage', toNode('n_collect'), dflt),
 
     edge('e_closing_end', 'n_closing', toNode('n_hangup'), dflt),
     edge('e_closing_manage_end', 'n_closing_manage', toNode('n_hangup'), dflt),
@@ -302,6 +305,7 @@ export function frontDeskAssistant({ webhookUrl, hangupToolId, schedulingId, bil
         llm('The caller has a general question about hours, services, location or new-patient info.')),
       edge(`e_${n}_human`, n, toNode('n_escalate'),
         llm('The caller explicitly asks for a person, or describes something you cannot help with.')),
+      edge(`e_${n}_unclear`, n, toNode(n), dflt),
     ]),
 
     edge('e_faq_sched', 'n_faq', toAssistant(schedulingId),
@@ -310,6 +314,7 @@ export function frontDeskAssistant({ webhookUrl, hangupToolId, schedulingId, bil
       llm('After the answer, the caller has a billing or insurance question.')),
     edge('e_faq_done', 'n_faq', toNode('n_goodbye'),
       llm('The caller has no more questions.')),
+    edge('e_faq_unclear', 'n_faq', toNode('n_faq'), dflt),
 
     edge('e_escalate_end', 'n_escalate', toNode('n_hangup'), dflt),
     edge('e_goodbye_end', 'n_goodbye', toNode('n_hangup'), dflt),

@@ -1,6 +1,7 @@
 // Deployed endpoints shared by setup.mjs, update.mjs and the live tests.
 export const WEBHOOK_BASE = 'https://receptionist-webhook-baaf7d07-b.telnyxcompute.com';
 export const MCP_URL = 'https://receptionist-mcp-f366a7db-0.telnyxcompute.com/mcp';
+export const ACTOR_BASE = 'https://day-slot-actor-4cabbc85-0.telnyxcompute.com';
 
 /**
  * The dynamic-variables webhook URL the assistants are configured with. It carries `?token=` because

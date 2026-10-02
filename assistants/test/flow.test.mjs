@@ -269,3 +269,201 @@ describe('all assistants', () => {
     assert.match(all.billing.instructions, /cannot look up accounts/i);
   });
 });
+
+describe('edge-case fallback edges (deterministic so callers never get stuck)', () => {
+  const fd = flows.frontDesk.conversation_flow;
+  const sched = flows.scheduling.conversation_flow;
+  const bill = flows.billing.conversation_flow;
+  const out = (fl, id) => fl.edges.filter((e) => e.start_node_id === id);
+  const hasDflt = (fl, from) => out(fl, from).some((e) => e.condition.type === 'default');
+  const dfltTarget = (fl, from) => out(fl, from).find((e) => e.condition.type === 'default')?.target;
+
+  it('Front Desk intent nodes have a default loop-back for ambiguous input', () => {
+    for (const n of ['n_intent', 'n_intent_returning']) {
+      assert.ok(hasDflt(fd, n), `${n} missing default edge`);
+      const t = dfltTarget(fd, n);
+      assert.equal(t.node_id, n, `${n} default should loop back to itself, not drift`);
+    }
+  });
+
+  it('Front Desk FAQ node has a default loop-back for off-script follow-ups', () => {
+    assert.ok(hasDflt(fd, 'n_faq'), 'n_faq missing default edge');
+    const t = dfltTarget(fd, 'n_faq');
+    assert.equal(t.node_id, 'n_faq', 'n_faq default should stay on FAQ');
+  });
+
+  it('Scheduling n_book has a default fallback to n_offer for unexpected tool errors', () => {
+    assert.ok(hasDflt(sched, 'n_book'), 'n_book missing default edge');
+    const t = dfltTarget(sched, 'n_book');
+    assert.equal(t.node_id, 'n_offer', 'n_book default should return to fresh availability');
+  });
+
+  it('Scheduling n_manage has a default fallback to n_collect for changed topic or unexpected errors', () => {
+    assert.ok(hasDflt(sched, 'n_manage'), 'n_manage missing default edge');
+    const t = dfltTarget(sched, 'n_manage');
+    assert.equal(t.node_id, 'n_collect', 'n_manage default should restart intent collection');
+  });
+
+  it('Billing n_billing has a default hand-off to Front Desk for general questions', () => {
+    assert.ok(hasDflt(bill, 'n_billing'), 'n_billing missing default edge');
+    const t = dfltTarget(bill, 'n_billing');
+    assert.equal(t.type, 'assistant', 'n_billing default should hand off to another assistant');
+    assert.equal(t.assistant_id, ids.frontDeskId, 'n_billing default should go to Front Desk');
+    assert.equal(t.voice_mode, 'unified', 'hand-off should use unified voice mode');
+  });
+
+  it('every prompt-only node in all assistants now has at least one deterministic way forward', () => {
+    // All prompt nodes should have either a default edge OR an expression edge (e.g. duration).
+    // The audit specifically covered nodes with *only* LLM edges.
+    for (const [name, a] of Object.entries(flows)) {
+      const fl = a.conversation_flow;
+      for (const n of fl.nodes.filter((x) => x.type === 'prompt')) {
+        const edges = out(fl, n.id);
+        const hasDeterministic = edges.some((e) => e.condition.type === 'default' || e.condition.type === 'expression');
+        assert.ok(hasDeterministic, `${name}/${n.id} has no deterministic fallback edge`);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AI-driven routing verification (REQUIRES LLM API KEY — DO NOT RUN)
+// ---------------------------------------------------------------------------
+// These tests send caller utterances to a real LLM alongside each edge's
+// classification prompt, asserting the model routes to the expected edge.
+//
+// To run manually when credits are available:
+//   LLM_API_KEY=$KEY LLM_BASE_URL=https://api.openai.com/v1 LLM_MODEL=gpt-4o-mini \n//     node --test test/flow.test.mjs
+//
+// Or point at Telnyx's hosted model endpoint:
+//   LLM_API_KEY=$TELNYX_KEY LLM_BASE_URL=https://api.telnyx.com/v2/ai \n//     LLM_MODEL=moonshotai/Kimi-K2.6 node --test test/flow.test.mjs
+//
+// Estimated cost per run: ~$0.05–0.15 (small classification prompts).
+describe.skip('AI routing verification against edge conditions', () => {
+  const API_KEY = process.env.LLM_API_KEY;
+  const BASE_URL = process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
+  const MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
+
+  // Hard-bail so these never execute even if someone un-skips the suite.
+  if (!API_KEY) {
+    it('SKIPPED — Set LLM_API_KEY to enable AI routing tests', () => { assert.ok(true); });
+    return;
+  }
+
+  async function classify(callerUtterance, edgePrompt) {
+    const system = `You are a call-routing classifier. Given a caller's utterance and a routing condition, reply with ONLY "YES" if the condition matches, or "NO" if it does not. Be strict — if the utterance is ambiguous or does not clearly satisfy the condition, reply "NO".\n\nCondition: ${edgePrompt}`;
+    const res = await fetch(`${BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${API_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: `Caller said: "${callerUtterance}"` },
+        ],
+        temperature: 0,
+        max_tokens: 10,
+      }),
+    });
+    if (!res.ok) throw new Error(`LLM error ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    return data.choices[0].message.content.trim().toUpperCase();
+  }
+
+  // Collect every LLM-conditioned edge across all assistants.
+  const llmEdges = [];
+  for (const [name, a] of Object.entries(flows)) {
+    const fl = a.conversation_flow;
+    for (const e of fl.edges) {
+      if (e.condition.type === 'llm') {
+        llmEdges.push({
+          assistant: name,
+          edgeId: e.id,
+          from: e.start_node_id,
+          to: e.target.node_id ?? e.target.assistant_id,
+          prompt: e.condition.prompt,
+        });
+      }
+    }
+  }
+
+  it('has edges to test', () => {
+    assert.ok(llmEdges.length > 0, 'no LLM edges found in flows');
+  });
+
+  const cases = [
+    // Front Desk intent routing
+    { utterance: 'I want to book a cleaning', expectYes: ['e_n_intent_sched', 'e_n_intent_returning_sched'] },
+    { utterance: 'I have a billing question', expectYes: ['e_n_intent_bill', 'e_n_intent_returning_bill'] },
+    { utterance: 'What are your hours?', expectYes: ['e_n_intent_faq', 'e_n_intent_returning_faq'] },
+    { utterance: 'I need a human', expectYes: ['e_n_intent_human', 'e_n_intent_returning_human'] },
+    { utterance: 'I am not sure what I need', expectYes: [] }, // ambiguous — none should match
+
+    // Front Desk FAQ routing
+    { utterance: 'Actually I want to schedule', expectYes: ['e_faq_sched'] },
+    { utterance: 'Never mind, thanks', expectYes: ['e_faq_done'] },
+    { utterance: 'Tell me about your services', expectYes: [] }, // off-script, should hit default (none of the LLM edges)
+
+    // Scheduling collect routing
+    { utterance: 'I need a new appointment', expectYes: ['e_collect_offer'] },
+    { utterance: 'I want to cancel', expectYes: ['e_collect_manage'] },
+    { utterance: 'Do you take insurance?', expectYes: ['e_collect_desk'] },
+
+    // Scheduling confirm routing
+    { utterance: 'Yes book it', expectYes: ['e_confirm_book'] },
+    { utterance: 'No, change the date', expectYes: ['e_confirm_back'] },
+    { utterance: 'Maybe?', expectYes: [] }, // ambiguous — default edge should catch
+
+    // Scheduling book routing (non-error paths)
+    { utterance: 'confirmed', expectYes: ['e_book_done'] },
+    { utterance: 'slot already booked', expectYes: ['e_book_retry'] },
+
+    // Scheduling manage routing
+    { utterance: 'done', expectYes: ['e_manage_done'] },
+    { utterance: 'try another time', expectYes: ['e_manage_retry'] },
+    { utterance: 'I changed my mind', expectYes: ['e_manage_back'] },
+    { utterance: 'that appointment is not mine', expectYes: ['e_manage_notfound'] },
+
+    // Billing routing
+    { utterance: 'I want to book', expectYes: ['e_billing_sched'] },
+    { utterance: 'thanks bye', expectYes: ['e_billing_done'] },
+    { utterance: 'What are your hours?', expectYes: [] }, // should default to Front Desk (no LLM edge matches)
+  ];
+
+  for (const { utterance, expectYes } of cases) {
+    it(`classifies "${utterance}"`, async () => {
+      const results = [];
+      for (const edge of llmEdges) {
+        const answer = await classify(utterance, edge.prompt);
+        if (answer === 'YES') results.push(edge.edgeId);
+      }
+      // Every edge in expectYes MUST classify YES; all others should classify NO.
+      for (const id of expectYes) {
+        assert.ok(results.includes(id), `expected ${id} to match for "${utterance}" but got: ${results.join(', ')}`);
+      }
+      for (const id of results) {
+        assert.ok(expectYes.includes(id), `unexpected match ${id} for "${utterance}"`);
+      }
+    });
+  }
+
+  // Smoke test for each new fallback default edge.
+  const defaultEdges = [
+    { assistant: 'frontDesk', node: 'n_intent', edge: 'e_n_intent_unclear' },
+    { assistant: 'frontDesk', node: 'n_intent_returning', edge: 'e_n_intent_returning_unclear' },
+    { assistant: 'frontDesk', node: 'n_faq', edge: 'e_faq_unclear' },
+    { assistant: 'scheduling', node: 'n_book', edge: 'e_book_unclear' },
+    { assistant: 'scheduling', node: 'n_manage', edge: 'e_manage_unclear' },
+    { assistant: 'billing', node: 'n_billing', edge: 'e_billing_faq' },
+  ];
+
+  for (const { assistant, node, edge } of defaultEdges) {
+    it(`default edge ${edge} exists on ${assistant}.${node}`, () => {
+      const fl = flows[assistant].conversation_flow;
+      const e = fl.edges.find((x) => x.id === edge);
+      assert.ok(e, `${edge} not found`);
+      assert.equal(e.condition.type, 'default');
+      assert.equal(e.start_node_id, node);
+    });
+  }
+});

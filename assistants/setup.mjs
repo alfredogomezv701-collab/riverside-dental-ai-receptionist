@@ -78,7 +78,7 @@ await call('POST', `/ai/assistants/${schedulingId}`, strip(schedulingAssistant({
   webhookUrl: WEBHOOK_URL, mcpServerId, hangupToolId, frontDeskId,
 })));
 await call('POST', `/ai/assistants/${billingId}`, strip(billingAssistant({
-  webhookUrl: WEBHOOK_URL, hangupToolId, schedulingId,
+  webhookUrl: WEBHOOK_URL, hangupToolId, schedulingId, frontDeskId,
 })));
 
 console.log(`\n${apply ? 'Created' : 'Would create'}: front desk=${frontDeskId} scheduling=${schedulingId} billing=${billingId}`);

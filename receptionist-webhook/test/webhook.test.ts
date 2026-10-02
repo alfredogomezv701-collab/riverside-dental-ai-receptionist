@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import type { KvNamespace } from '@telnyx/edge-runtime';
 import { DaySlotActor } from '../../day-slot-actor/src/day_slot_actor.js';
 import { createMockActorContext } from '../../day-slot-actor/test/mock_actor_context.js';
@@ -10,6 +11,24 @@ import { redact, maskPhone } from '../src/log.js';
 
 const ACTOR_SECRET = 's3cret';
 const TOKEN = 'wh-token';
+
+/** Generate a test Ed25519 keypair for webhook signature tests. */
+function generateTestKeypair(): { publicKeyPem: string; privateKeyPem: string } {
+  const kp = generateKeyPairSync('ed25519', {
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+  return { publicKeyPem: kp.publicKey, privateKeyPem: kp.privateKey };
+}
+
+/** Sign a webhook body the same way Telnyx does: timestamp.body_bytes */
+function signWebhookBody(privateKeyPem: string, timestampSec: number, bodyJson: unknown): { signatureHex: string; body: string } {
+  const body = JSON.stringify(bodyJson);
+  const payload = `${timestampSec}.${body}`;
+  const signature = sign(null, Buffer.from(payload), privateKeyPem);
+  return { signatureHex: signature.toString('hex'), body };
+}
+
 
 function fakeKv(seed: Record<string, unknown> = {}) {
   const store = new Map<string, string>(Object.entries(seed).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]));
@@ -62,9 +81,10 @@ function realActorNamespace(): DaySlotNamespace {
       }
       const e = actors.get(name)!;
       return {
-        holdSlot: serial(e, (s: string, c: string, d?: number) => e.actor.holdSlot(s, c, d)),
+        holdSlot: serial(e, (s: string, c: string, dm?: number, hd?: number) => e.actor.holdSlot(s, c, dm, hd)),
         confirmSlot: serial(e, (s: string, c: string) => e.actor.confirmSlot(s, c)),
         releaseSlot: serial(e, (s: string, c: string) => e.actor.releaseSlot(s, c)),
+        getStats: serial(e, () => e.actor.getStats()),
       };
     },
   };
@@ -173,6 +193,120 @@ describe('dynamic variables webhook - authentication', () => {
       assert.ok(!l.includes('5551234567'), 'full phone number leaked into logs');
     }
     assert.equal(JSON.parse(lines[1]).outcome, 'unauthorized');
+  });
+
+  it('accepts a valid Ed25519 webhook signature before checking the URL token', async () => {
+    const { publicKeyPem, privateKeyPem } = generateTestKeypair();
+    const ts = Math.floor(Date.now() / 1000);
+    const { signatureHex, body: rawBody } = signWebhookBody(privateKeyPem, ts, body);
+    const { env } = makeEnv(seeded, { ACTOR_PROXY_SECRET: ACTOR_SECRET, WEBHOOK_TOKEN: TOKEN, TELNYX_WEBHOOK_PUBLIC_KEY: publicKeyPem });
+    const req = new Request(`https://x.test${DV}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'telnyx-signature-ed25519': signatureHex,
+        'telnyx-timestamp': String(ts),
+      },
+      body: rawBody,
+    });
+    const res = await handleRequest(req, env);
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as any).dynamic_variables.patient_name, 'Ada');
+  });
+
+  it('rejects a tampered body even with a valid-looking token', async () => {
+    const { publicKeyPem, privateKeyPem } = generateTestKeypair();
+    const ts = Math.floor(Date.now() / 1000);
+    const { signatureHex, body: rawBody } = signWebhookBody(privateKeyPem, ts, body);
+    const { env } = makeEnv(seeded, { ACTOR_PROXY_SECRET: ACTOR_SECRET, WEBHOOK_TOKEN: TOKEN, TELNYX_WEBHOOK_PUBLIC_KEY: publicKeyPem });
+    // Tamper the body after signing: change the phone number in the payload
+    const tamperedBody = rawBody.replace('+15551234567', '+15559998888');
+    const req = new Request(`https://x.test${DV}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'telnyx-signature-ed25519': signatureHex,
+        'telnyx-timestamp': String(ts),
+      },
+      body: tamperedBody,
+    });
+    const res = await handleRequest(req, env);
+    assert.equal(res.status, 401);
+    assert.equal(((await res.json()) as any).reason, 'invalid_signature');
+  });
+
+  it('rejects a stale timestamp (>5 min old)', async () => {
+    const { publicKeyPem, privateKeyPem } = generateTestKeypair();
+    const ts = Math.floor(Date.now() / 1000) - 6 * 60; // 6 minutes ago
+    const { signatureHex, body: rawBody } = signWebhookBody(privateKeyPem, ts, body);
+    const { env } = makeEnv(seeded, { ACTOR_PROXY_SECRET: ACTOR_SECRET, WEBHOOK_TOKEN: TOKEN, TELNYX_WEBHOOK_PUBLIC_KEY: publicKeyPem });
+    const req = new Request(`https://x.test${DV}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'telnyx-signature-ed25519': signatureHex,
+        'telnyx-timestamp': String(ts),
+      },
+      body: rawBody,
+    });
+    const res = await handleRequest(req, env);
+    assert.equal(res.status, 401);
+    assert.equal(((await res.json()) as any).reason, 'stale');
+  });
+
+  it('rejects a signature signed with a different key', async () => {
+    const { publicKeyPem } = generateTestKeypair();
+    const otherKp = generateTestKeypair(); // different keypair
+    const ts = Math.floor(Date.now() / 1000);
+    const { signatureHex, body: rawBody } = signWebhookBody(otherKp.privateKeyPem, ts, body);
+    const { env } = makeEnv(seeded, { ACTOR_PROXY_SECRET: ACTOR_SECRET, WEBHOOK_TOKEN: TOKEN, TELNYX_WEBHOOK_PUBLIC_KEY: publicKeyPem });
+    const req = new Request(`https://x.test${DV}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'telnyx-signature-ed25519': signatureHex,
+        'telnyx-timestamp': String(ts),
+      },
+      body: rawBody,
+    });
+    const res = await handleRequest(req, env);
+    assert.equal(res.status, 401);
+    assert.equal(((await res.json()) as any).reason, 'invalid_signature');
+  });
+
+  it('rejects malformed signature hex (odd length, non-hex chars, too short)', async () => {
+    const { publicKeyPem } = generateTestKeypair();
+    const ts = Math.floor(Date.now() / 1000);
+    const { body: rawBody } = signWebhookBody(generateTestKeypair().privateKeyPem, ts, body);
+    const { env } = makeEnv(seeded, { ACTOR_PROXY_SECRET: ACTOR_SECRET, WEBHOOK_TOKEN: TOKEN, TELNYX_WEBHOOK_PUBLIC_KEY: publicKeyPem });
+    for (const badSig of ['abc', 'gggg', 'a'.repeat(127), 'a'.repeat(129)]) {
+      const req = new Request(`https://x.test${DV}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'telnyx-signature-ed25519': badSig,
+          'telnyx-timestamp': String(ts),
+        },
+        body: rawBody,
+      });
+      const res = await handleRequest(req, env);
+      assert.equal(res.status, 401, `signature "${badSig}"`);
+      assert.equal(((await res.json()) as any).reason, 'invalid_signature');
+    }
+  });
+
+  it('falls back to token-only auth when TELNYX_WEBHOOK_PUBLIC_KEY is not configured', async () => {
+    const { env } = makeEnv(seeded, { ACTOR_PROXY_SECRET: ACTOR_SECRET, WEBHOOK_TOKEN: TOKEN });
+    const res = await handleRequest(post(DV, body), env);
+    assert.equal(res.status, 200);
+  });
+
+  it('fails closed when the public key is configured but signature header is missing', async () => {
+    const { publicKeyPem } = generateTestKeypair();
+    const { env } = makeEnv(seeded, { ACTOR_PROXY_SECRET: ACTOR_SECRET, WEBHOOK_TOKEN: TOKEN, TELNYX_WEBHOOK_PUBLIC_KEY: publicKeyPem });
+    const res = await handleRequest(post(DV, body), env);
+    assert.equal(res.status, 401);
+    assert.equal(((await res.json()) as any).reason, 'missing_headers');
   });
 });
 
@@ -431,5 +565,30 @@ describe('misc', () => {
     const { env } = makeEnv();
     assert.equal((await handleRequest(new Request('https://x.test/health'), env)).status, 200);
     assert.equal((await handleRequest(new Request('https://x.test/nope'), env)).status, 404);
+  });
+
+  it('/health returns version and secret presence (never values)', async () => {
+    const { env } = makeEnv({}, { WEBHOOK_TOKEN: TOKEN, ACTOR_PROXY_SECRET: ACTOR_SECRET });
+    const res = await handleRequest(new Request('https://x.test/health'), env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, 'ok');
+    assert.ok(typeof body.version === 'string' && body.version.length > 0);
+    assert.deepEqual(body.secrets, { WEBHOOK_TOKEN: true, ACTOR_PROXY_SECRET: true, TELNYX_WEBHOOK_PUBLIC_KEY: false });
+  });
+
+  it('/health reports false for missing secrets', async () => {
+    const { env } = makeEnv({}, {});
+    const res = await handleRequest(new Request('https://x.test/health'), env);
+    const body = await res.json();
+    assert.deepEqual(body.secrets, { WEBHOOK_TOKEN: false, ACTOR_PROXY_SECRET: false, TELNYX_WEBHOOK_PUBLIC_KEY: false });
+  });
+
+  it('/health includes TELNYX_WEBHOOK_PUBLIC_KEY presence when configured', async () => {
+    const { publicKeyPem } = generateTestKeypair();
+    const { env } = makeEnv({}, { WEBHOOK_TOKEN: TOKEN, ACTOR_PROXY_SECRET: ACTOR_SECRET, TELNYX_WEBHOOK_PUBLIC_KEY: publicKeyPem });
+    const res = await handleRequest(new Request('https://x.test/health'), env);
+    const body = await res.json();
+    assert.equal(body.secrets.TELNYX_WEBHOOK_PUBLIC_KEY, true);
   });
 });

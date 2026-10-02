@@ -28,11 +28,25 @@ if (!(actorProxyUrl && actorProxySecret)) {
 
 const sharedSecret = process.env.SHARED_SECRET;
 const port = parseInt(process.env.PORT || '8080', 10);
+const VERSION = process.env.VERSION || 'dev';
+
+function secretPresent(name: string): boolean {
+  const v = process.env[name];
+  return v !== undefined && v !== '';
+}
 
 const app = express();
 app.use(express.json());
 
-app.get('/health', (_req, res) => res.status(200).send('OK'));
+app.get('/health', (_req, res) => res.status(200).json({
+  status: 'ok',
+  version: VERSION,
+  secrets: {
+    SHARED_SECRET: secretPresent('SHARED_SECRET'),
+    ACTOR_PROXY_SECRET: secretPresent('ACTOR_PROXY_SECRET'),
+    ACTOR_PROXY_URL: secretPresent('ACTOR_PROXY_URL'),
+  },
+}));
 app.get('/health/liveness', (_req, res) => res.status(200).send('OK'));
 app.get('/health/readiness', (_req, res) => res.status(200).send('OK'));
 

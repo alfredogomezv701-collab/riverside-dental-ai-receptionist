@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { chatClient } from './chat_client.mjs';
 import { billingAssistant, schedulingAssistant, frontDeskAssistant } from '../definitions.mjs';
-import { WEBHOOK_BASE as WEBHOOK, MCP_URL as MCP, webhookUrl } from '../config.mjs';
+import { WEBHOOK_BASE as WEBHOOK, MCP_URL as MCP, ACTOR_BASE as ACTOR, webhookUrl } from '../config.mjs';
 
 const KEY = process.env.TELNYX_API_KEY;
 const MCP_SECRET = process.env.MCP_SHARED_SECRET;
@@ -194,6 +194,21 @@ describe('deployed edge functions', { skip }, () => {
     const tools = (await mcpRpc('tools/list', {})).tools.map((t) => t.name).sort();
     assert.deepEqual(tools, ['book_appointment', 'cancel_or_reschedule_appointment', 'check_availability']);
   });
+
+  it('health endpoints on all functions return ok, version and secret presence', async () => {
+    for (const [name, url] of [['webhook', WEBHOOK], ['mcp', MCP.replace('/mcp', '')], ['actor', ACTOR]]) {
+      const res = await fetch(`${url}/health`);
+      assert.equal(res.status, 200, `${name} /health status`);
+      const body = await res.json();
+      assert.equal(body.status, 'ok', `${name} /health body.status`);
+      assert.ok(typeof body.version === 'string' && body.version.length > 0, `${name} /health body.version`);
+      assert.ok(typeof body.secrets === 'object' && body.secrets !== null, `${name} /health body.secrets`);
+      // Verify no secret VALUES are leaked
+      for (const [k, v] of Object.entries(body.secrets)) {
+        assert.equal(typeof v, 'boolean', `${name} /health secrets.${k} must be boolean, never the value`);
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------------------
@@ -295,68 +310,22 @@ async function mpcSafe(fn) {
 }
 
 // ---------------------------------------------------------------------------------------
-describe('conversations (real LLM, real tools)', { skip, timeout: 240000 }, () => {
-  it('greets with the verbatim disclosure, then answers hours from clinic facts', async () => {
-    await retry(2, async () => {
-      const c = await api.start(ids.frontDesk, { name: 'autotest-faq' });
-      try {
-        const first = await c.say('Hi');
-        assert.match(first, /AI receptionist/i);
-        assert.match(first, /may be recorded/i);
-        const hours = await c.say('What time do you open and close?');
-        assert.match(hours, /\b(9|nine)\b/i, hours);
-        assert.match(hours, /\b(5|five)\b/i, hours);
-        assert.match(hours, /monday|weekday|friday/i, hours);
-        assert.doesNotMatch(hours, /not (certain|sure)/i);
-      } finally {
-        await c.end();
-      }
-    });
-  });
-
-  it('hands a booking request off to the Scheduling assistant', async () => {
-    await retry(2, async () => {
-      const c = await api.start(ids.frontDesk, { name: 'autotest-route-sched' });
-      try {
-        await c.say('Hi');
-        await c.say('I would like to book a cleaning please');
-        assert.equal(c.activeAssistant, ids.scheduling);
-      } finally {
-        await c.end();
-      }
-    });
-  });
-
-  it('hands an insurance question off to the Billing assistant, which has no tools', async () => {
-    await retry(2, async () => {
-      const c = await api.start(ids.frontDesk, { name: 'autotest-route-bill' });
-      try {
-        await c.say('Hi');
-        await c.say('Do you take Delta Dental insurance, and how do payment plans work?');
-        assert.equal(c.activeAssistant, ids.billing);
-        assert.deepEqual(await c.toolResults('book_appointment'), []);
-      } finally {
-        await c.end();
-      }
-    });
-  });
-
-  it('does not invent availability: offered slots come from check_availability', async () => {
-    await retry(2, async () => {
-      const date = randomWeekday();
-      const c = await api.start(ids.scheduling, { name: 'autotest-avail' });
-      try {
-        await c.say(`I need a cleaning on ${date}, what is open?`);
-        const results = await c.toolResults('check_availability');
-        assert.ok(results.length >= 1, 'assistant answered without calling check_availability');
-        assert.equal(results[0].date, date);
-      } finally {
-        await c.end();
-      }
-    });
-  });
-
-  it('books end to end through chat, and every backend view agrees', { skip: skipAll }, async () => {
+// DELIBERATELY TRIMMED: conversation tests that validate routing/FAQ/tool-calls are now
+// covered by Telnyx Portal AI Tests (see scripts/create-telnyx-tests.mjs) OR by the
+// zero-cost offline suite in flow.test.mjs.  The only remaining LLM-based test is the
+// end-to-end booking flow, which validates that the assistant can hold a multi-turn
+// conversation and reach a real booking.
+//
+// Removed from here:
+//   - "greets with verbatim disclosure, answers hours" → Portal test + flow.test node asserts
+//   - "hands booking to Scheduling" → Portal test + flow.test edge assert
+//   - "hands insurance to Billing" → Portal test + flow.test edge assert
+//   - "does not invent availability" → backend end-to-end direct MCP call
+//
+// To recreate in Portal: scripts/create-telnyx-tests.mjs
+// ---------------------------------------------------------------------------------------
+describe('conversation end to end (real LLM, real tools)', { skip, timeout: 240000 }, () => {
+  it('books through chat and every backend view agrees', { skip: skipAll }, async () => {
     const phone = randomPhone();
     const date = randomWeekday();
     let booked;
