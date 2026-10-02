@@ -123,9 +123,9 @@ describe('deployed assistants match definitions.mjs', { skip: skip || skipToken 
     assert.deepEqual([...to].sort(), [ids.billing, ids.scheduling].sort());
   });
 
-  it('only Scheduling carries the MCP server, with the three-tool allowlist', () => {
+  it('only Scheduling carries the MCP server, with the four-tool allowlist (incl. join_waitlist)', () => {
     assert.equal(stored.scheduling.mcp_servers[0].id, ids.mcpServer);
-    assert.equal(stored.scheduling.mcp_servers[0].allowed_tools.length, 3);
+    assert.equal(stored.scheduling.mcp_servers[0].allowed_tools.length, 4);
     assert.deepEqual(stored.frontDesk.mcp_servers ?? [], []);
     assert.deepEqual(stored.billing.mcp_servers ?? [], []);
   });
@@ -190,9 +190,9 @@ describe('deployed edge functions', { skip }, () => {
     assert.equal((await fetch(MCP, { method: 'POST', headers: { authorization: 'Bearer wrong', 'content-type': 'application/json' }, body: '{}' })).status, 401);
   });
 
-  it('MCP lists exactly the three tools the Scheduling allowlist expects', { skip: skipMcp }, async () => {
+  it('MCP lists exactly the four tools the Scheduling allowlist expects (incl. join_waitlist)', { skip: skipMcp }, async () => {
     const tools = (await mcpRpc('tools/list', {})).tools.map((t) => t.name).sort();
-    assert.deepEqual(tools, ['book_appointment', 'cancel_or_reschedule_appointment', 'check_availability']);
+    assert.deepEqual(tools, ['book_appointment', 'cancel_or_reschedule_appointment', 'check_availability', 'join_waitlist']);
   });
 
   it('health endpoints on all functions return ok, version and secret presence', async () => {
@@ -220,7 +220,13 @@ describe('backend end to end, no LLM', { skip: skipAll, timeout: 180000 }, () =>
   const phone = randomPhone();
   const other = randomPhone();
   const booking = { service: 'cleaning', date, start: '10:00', patientName: 'Backend Tester', patientPhone: phone };
-  const slotOf = async (start) => (await mcp('check_availability', { service: 'cleaning', date })).slots.find((s) => s.start === start);
+  const slotOf = async (start) => {
+    // With pagination + filtering, check_availability returns only available:true slots (paged),
+    // so a slot that is booked/closed is simply absent — treat absence as available:false.
+    // Pass limit:100 so the probe can find any still-open slot in one call.
+    const r = (await mcp('check_availability', { service: 'cleaning', date, limit: 100 })).slots.find((s) => s.start === start);
+    return r ?? { start, available: false };
+  };
 
   it('rejects slots that are not real, without writing anything', async () => {
     for (const [over, reason] of [
@@ -299,6 +305,47 @@ describe('backend end to end, no LLM', { skip: skipAll, timeout: 180000 }, () =>
     assert.equal((await dynVars(phone)).is_returning_patient, 'false');
     assert.equal((await mcp('cancel_or_reschedule_appointment', { appointmentId: v.next_appointment_id, action: 'cancel' })).reason, 'appointment_not_found');
   });
+
+  // Waitlist: three failed bookings for the same date+phone should bump attempt_count to 3 and
+  // signal should_waitlist; join_waitlist then persists the request, and a retry returns the same
+  // entry (so a flaky turn doesn't create a duplicate). This uses a UNIQUE random phone so a leaked
+  // waitlist key (the suite can't delete KV directly; only MCP + the dynamic-variables webhook are
+  // reachable from the test) sits at a key no future run collides with — same pattern the rest of
+  // the suite uses for patient/{phone10} records from crashed runs.
+  it('after 3 failed bookings, signals should_waitlist and a join_waitlist call persists the request', async () => {
+    const wlPhone = randomPhone();
+    const wlDate = randomWeekday();
+    // First booking from a different caller seals the slot.
+    const seed = await mcp('book_appointment', { service: 'cleaning', date: wlDate, start: '10:00', patientName: 'Sealed', patientPhone: randomPhone() });
+    assert.equal(seed.confirmed, true, JSON.stringify(seed));
+    cleanup.add(seed.appointment.appointmentId);
+
+    // Three failed attempts by the waitlist caller on the sealed slot:
+    let last;
+    for (let i = 1; i <= 3; i++) {
+      last = await mcp('book_appointment', { service: 'cleaning', date: wlDate, start: '10:00', patientName: 'Wishlist', patientPhone: wlPhone });
+      assert.equal(last.confirmed, false, `attempt ${i} should fail`);
+      assert.equal(last.reason, 'slot_already_booked');
+      assert.equal(last.attempt_count, i, `attempt_count should be ${i}`);
+      assert.equal(last.should_waitlist, i >= 3, `should_waitlist should ${i >= 3 ? 'flip on >=3' : 'be false until 3'}`);
+    }
+
+    // Persist the waitlist request — the n_book instructions tell the model to call this now.
+    const joined = await mcp('join_waitlist', { date: wlDate, service: 'cleaning', patientName: 'Wishlist', patientPhone: wlPhone });
+    assert.equal(joined.queued, true, JSON.stringify(joined));
+    assert.equal(joined.entry.date, wlDate);
+    assert.equal(joined.entry.service, 'cleaning');
+    assert.equal(joined.entry.patientName, 'Wishlist');
+    assert.ok(joined.entry.entryId.length > 0);
+    assert.ok(Date.parse(joined.entry.joinedAt) > 0);
+
+    // A retry (the model often retries a tool call on a flaky turn) returns the SAME entry, not a
+    // duplicate row — the waitlist key is one entry per caller per date.
+    const again = await mcp('join_waitlist', { date: wlDate, service: 'cleaning', patientName: 'Wishlist', patientPhone: wlPhone });
+    assert.equal(again.queued, true);
+    assert.equal(again.alreadyQueuedByYou, true);
+    assert.equal(again.entry.entryId, joined.entry.entryId);
+  });
 });
 
 async function mpcSafe(fn) {
@@ -357,7 +404,9 @@ describe('conversation end to end (real LLM, real tools)', { skip, timeout: 2400
     assert.equal(v.patient_name, 'Testy McTestface');
     assert.match(v.next_appointment, new RegExp(`${date} at ${booked.start}`));
     assert.equal(v.next_appointment_id, booked.appointmentId);
-    const slot = (await mcp('check_availability', { service: 'cleaning', date })).slots.find((s) => s.start === booked.start);
-    assert.equal(slot.available, false);
+    // The booked slot must now be ABSENT from check_availability's paged response (only
+    // available:true slots are returned). Absence is the post-booking visibility story.
+    const page = (await mcp('check_availability', { service: 'cleaning', date, limit: 100 })).slots;
+    assert.equal(page.find((s) => s.start === booked.start), undefined, 'the booked slot must not appear as available');
   });
 });

@@ -5,6 +5,8 @@ import {
   BOOK_APPOINTMENT_TOOL_NAME,
   BOOKING_KEY,
   APPOINTMENT_KEY,
+  WAITLIST_ATTEMPTS_KEY,
+  WAITLIST_THRESHOLD,
 } from '../src/tools/book_appointment.js';
 import { runBookAppointment } from '../src/tools/book_appointment_handler.js';
 import { slotGrid } from '../src/calendar.js';
@@ -157,5 +159,73 @@ describe('runBookAppointment - a failed write undoes the writes that did land', 
     assert.equal((await kv.list({ prefix: 'appointment/' })).keys.length, 1, 'only the first appointment remains');
     assert.equal(await kv.get(PATIENT_KEY(PHONE)), before, 'patient record unchanged');
     assert.ok(first.confirmed);
+  });
+});
+
+describe('runBookAppointment - failed-attempt counter (server-side, for the waitlist edge)', () => {
+  it('bumps attempt_count on each slot_already_booked and signals should_waitlist at the threshold', async () => {
+    const kv = new MockKvNamespace();
+    // Pre-seed a booking so the same slot returns slot_already_booked for a different caller.
+    await runBookAppointment(bookInput() as never, kvCtx(kv));
+
+    let count = 0;
+    for (let i = 1; i <= WAITLIST_THRESHOLD; i++) {
+      const r = await runBookAppointment(bookInput({ patientName: `Bob ${i}`, patientPhone: PHONE_B }) as never, kvCtx(kv));
+      assert.equal(r.confirmed, false, `attempt ${i}`);
+      assert.equal(r.reason, 'slot_already_booked');
+      assert.equal(r.attempt_count, i, `attempt_count is the running total`);
+      assert.equal(r.should_waitlist, i >= WAITLIST_THRESHOLD, `should_waitlist flips at the threshold`);
+      count = i;
+    }
+    assert.equal(count, WAITLIST_THRESHOLD);
+    // The counter is persisted under waitlist_attempts/{date}/{phone10} so the next book sees it.
+    const stored = await kv.get(WAITLIST_ATTEMPTS_KEY(TUE, PHONE_B));
+    assert.equal(stored, String(WAITLIST_THRESHOLD));
+  });
+
+  it("does NOT bump the counter on invalid_slot (validation errors are the caller's fault, not a fully-booked day)", async () => {
+    const kv = new MockKvNamespace();
+    const r = await runBookAppointment(bookInput({ service: 'whitening' }) as never, kvCtx(kv));
+    assert.equal(r.confirmed, false);
+    assert.equal(r.reason, 'invalid_slot');
+    assert.equal(r.attempt_count, undefined, 'invalid_slot does not carry attempt_count');
+    assert.equal(r.should_waitlist, undefined);
+    assert.equal(await kv.get(WAITLIST_ATTEMPTS_KEY(TUE, PHONE)), null, 'no counter written');
+  });
+
+  it('resets the counter to 0 on a successful confirm (a future booking effort starts fresh)', async () => {
+    const kv = new MockKvNamespace();
+    // Bump a couple of times first by failing to book the same slot someone else holds.
+    await runBookAppointment(bookInput() as never, kvCtx(kv)); // seed
+    await runBookAppointment(bookInput({ patientPhone: PHONE_B }) as never, kvCtx(kv)); // fail 1
+    await runBookAppointment(bookInput({ patientPhone: PHONE_B, start: openSlot('cleaning', TUE, 1) } as never) as never, kvCtx(kv)); // succeed on a different open slot
+    assert.equal(await kv.get(WAITLIST_ATTEMPTS_KEY(TUE, PHONE_B)), null, 'counter cleared on success');
+  });
+
+  it('counter errors are swallowed (a KV failure never blocks a booking decision)', async () => {
+    const kv = new MockKvNamespace();
+    await runBookAppointment(bookInput() as never, kvCtx(kv)); // seed
+    // Make the counter write fail; the booking must still return slot_already_booked.
+    kv.failPutsMatching = /^waitlist_attempts\//;
+    const r = await runBookAppointment(bookInput({ patientPhone: PHONE_B }) as never, kvCtx(kv));
+    assert.equal(r.confirmed, false);
+    assert.equal(r.reason, 'slot_already_booked');
+    assert.equal(r.attempt_count, 1, 'the in-memory count is still 1 even though the put failed');
+    assert.equal(r.should_waitlist, false, '1 < 3 so no waitlist signal');
+  });
+
+  it('counter is scoped by phone+date: a different date is a separate count', async () => {
+    const kv = new MockKvNamespace();
+    // Fail twice on TUE for PHONE_B, then once on WED: the WED attempt should be 1, not 3.
+    await runBookAppointment(bookInput() as never, kvCtx(kv)); // seed on TUE
+    await runBookAppointment(bookInput({ patientPhone: PHONE_B }) as never, kvCtx(kv)); // TUE fail 1
+    const tue2 = await runBookAppointment(bookInput({ patientPhone: PHONE_B }) as never, kvCtx(kv));
+    assert.equal(tue2.attempt_count, 2);
+
+    // Seeded booking on WED is needed so WED can fail; book a slot PHOBE_B can collide with.
+    await runBookAppointment(bookInput({ date: WED, start: openSlot('cleaning', WED, 0) }) as never, kvCtx(kv));
+    const wed1 = await runBookAppointment(bookInput({ date: WED, start: openSlot('cleaning', WED, 0), patientPhone: PHONE_B }) as never, kvCtx(kv));
+    assert.equal(wed1.confirmed, false);
+    assert.equal(wed1.attempt_count, 1, 'WED count is independent of TUE');
   });
 });

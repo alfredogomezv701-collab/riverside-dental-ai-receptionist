@@ -204,3 +204,55 @@ exposed the latency bug below), plus the per-tool `outcome` field, which groups 
 ## OpenCode configuration
 
 `.opencode/opencode.json` has the `@telnyx/opencode` plugin active; setup is in [`docs/OPENCODE_SETUP.md`](docs/OPENCODE_SETUP.md).
+
+### Model comparison and dogfooding notes
+
+Two Telnyx-hosted models drove most of the actual implementation work in this repo, in this order:
+
+**GLM-5.2** (OpenCode's own default when you install the Telnyx plugin) — first pass. Coming from
+Claude Sonnet as a baseline, the friction was autonomy: give Claude a reasonably clear instruction
+and it infers the steps and just runs them; GLM, on that first pass, tended to lay out everything it
+planned to do and stop for confirmation even when the ask had already been explicit. Not an
+unreasonable default behavior in general, but it meant more back-and-forth than expected for
+already-clear instructions.
+
+**Kimi-K2.6** — switched to this next, partly to get away from the confirmation friction, and partly
+because this was still before the promo code landed and credits were tight, so comparing models
+mattered. Kimi had the opposite problem: it ran things immediately without over-checking, which was
+the autonomy I wanted, but it also frequently did *more* than asked — scope creep in the other
+direction, something I recognize from Claude too, just more pronounced here.
+
+The clearest example: I asked it to write tests for the live API. It wrote far more test code than
+needed — enough that a lot of it turned out redundant and got discarded later, which is the actual
+origin of `assistants/test/live.test.mjs` later getting trimmed down to one LLM-based end-to-end test
+plus the no-LLM backend suite (see `docs/TODO.md`). Worse, it then **ran those tests itself before I'd
+asked it to** — and because live tests place real inference calls (writing the tests, executing them,
+reading back the results all cost tokens, and the same inference budget pays for both my coding
+assistant and the assistant-under-test), that one unprompted step alone burned about $2 of account
+balance at a moment when I had roughly $3 left and was being deliberately conservative. That incident —
+spending real money without being asked, right when the budget was tightest — is a big part of why I
+moved off Kimi once the promo code came through and I didn't need to tolerate it anymore.
+
+Code quality was also the weaker of the two — enough that I started routing code reviews through
+Claude Code instead of trusting Kimi's own review output, which was also a reasonable call
+given credits were already tight at that point.
+
+**Back to GLM-5.2** — once the promo code came through and the pressure to economize on model choice
+eased, I went back to GLM. The second impression was considerably better than the first: faster,
+better at actually running/producing correct code, and — the most noticeable difference day to day —
+it seemed to need to read fewer files before it started working, which in practice meant its context
+filled up much more slowly. I restart a session once it's used something like 40-50% of context to
+keep costs down, and Kimi hit that threshold noticeably faster than GLM does, meaning more
+session-restarts (and more re-establishing context) with Kimi for comparable work. I'll caveat that
+this might partly be a read on *my own* prompting getting better over the day rather than a pure
+model difference, and GLM's code reviews surfacing fewer issues than Kimi's is confounded the same
+way — by the time GLM was reviewing, the codebase was already in better shape from earlier fixes, so
+it's not a clean apples-to-apples comparison of review quality.
+
+The early "asks for confirmation on everything" behavior from the first GLM session didn't recur in
+later ones — unclear whether that's because I got more explicit in how I prompt it, or whether the
+first session was just an unlucky sample (it was only one session before the second attempt). Either
+way, net verdict: GLM ended up the stronger model for this work once I'd learned how to prompt it,
+close enough to Claude Sonnet for this kind of task that the gap felt small by the end — even though
+Kimi logged more total hours across the project simply because the rocky first GLM impression came
+before credits were secure enough to freely experiment.

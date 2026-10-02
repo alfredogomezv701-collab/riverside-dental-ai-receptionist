@@ -9,6 +9,8 @@ import {
   BOOK_APPOINTMENT_TOOL_DESCRIPTION,
   BOOKING_KEY,
   APPOINTMENT_KEY,
+  WAITLIST_ATTEMPTS_KEY,
+  WAITLIST_THRESHOLD,
   bookAppointmentInputSchema,
   type BookAppointmentInput,
   type BookAppointmentResult,
@@ -24,6 +26,51 @@ export interface ToolContext {
 }
 
 const samePhone = (a: string, b: string) => digitsOf(a).slice(-10) === digitsOf(b).slice(-10);
+
+/**
+ * Best-effort per-caller-per-date failed-booking counter. A failure here MUST NOT block a booking
+ * decision or change its result — the counter is only the input the `attempt_count >= 3 ->
+ * waitlist` edge reads, and the safe direction for a counter error is to under-count (the caller
+ * gets one more retry, not a spurious waitlist). Every read/write is caught and the counter is
+ * treated as 0 on any error.
+ *
+ * Scoped by phone+date (matching the waitlist key): count is for the specific day the caller is
+ * fighting for. Reset to 0 on a successful confirm so a caller who books after 1-2 failures starts
+ * fresh for their next booking effort. Kept short and serial — it's one small KV op on the booking
+ * path, alongside the parallel booking reads, and only on slot_already_booked (not on success or
+ * invalid_slot, which aren't "the day is full" signals).
+ */
+async function readAttempts(kv: KvNamespace | undefined, date: string, phone: string): Promise<number> {
+  if (!kv) return 0;
+  try {
+    const raw = await kv.get(WAITLIST_ATTEMPTS_KEY(date, phone));
+    return raw ? Math.max(0, parseInt(raw, 10) || 0) : 0;
+  } catch {
+    return 0;
+  }
+}
+async function bumpAttempts(kv: KvNamespace | undefined, date: string, phone: string): Promise<number> {
+  if (!kv) return 1;
+  const current = await readAttempts(kv, date, phone);
+  const next = current + 1;
+  try {
+    await kv.put(WAITLIST_ATTEMPTS_KEY(date, phone), String(next));
+  } catch {
+    // If the write failed, return the in-memory count we'd have written — the next bump will
+    // re-read 0 again, so the worst case is the counter never advances and the waitlist never
+    // fires for this caller. That's the safe failure direction (more retries, not a wrong waitlist).
+    return next;
+  }
+  return next;
+}
+async function resetAttempts(kv: KvNamespace | undefined, date: string, phone: string): Promise<void> {
+  if (!kv) return;
+  try {
+    await kv.delete(WAITLIST_ATTEMPTS_KEY(date, phone));
+  } catch {
+    // ignore — a stale counter just means the next failed booking starts from 1 instead of 0
+  }
+}
 
 export async function runBookAppointment(
   input: BookAppointmentInput,
@@ -54,20 +101,28 @@ export async function runBookAppointment(
   );
   if (mine?.appointmentId) {
     await release();
+    // A successful booking (even an already-had one) zeroes the failed-attempt counter.
+    await resetAttempts(ctx.kv, input.date, input.patientPhone);
     return { confirmed: true, alreadyBookedByYou: true, appointment: mine as AppointmentRecord };
   }
 
-  if (stub && !held) return { confirmed: false, reason: 'slot_already_booked' };
+  if (stub && !held) {
+    const attempt_count = await bumpAttempts(ctx.kv, input.date, input.patientPhone);
+    return { confirmed: false, reason: 'slot_already_booked', attempt_count, should_waitlist: attempt_count >= WAITLIST_THRESHOLD };
+  }
 
   // The actor only sees identical start times; overlap between different-length appointments
   // (a 90-minute root canal vs a cleaning inside it) is caught here.
   const clash = findConflict({ service: input.service, start: input.start }, dayBookings);
   if (clash) {
     await release();
+    const attempt_count = await bumpAttempts(ctx.kv, input.date, input.patientPhone);
     return {
       confirmed: false,
       reason: 'slot_already_booked',
       detail: `overlaps an existing ${clash.service} appointment at ${clash.start}`,
+      attempt_count,
+      should_waitlist: attempt_count >= WAITLIST_THRESHOLD,
     };
   }
 
@@ -77,7 +132,8 @@ export async function runBookAppointment(
       // Shouldn't happen right after our own successful hold; fail closed and free the hold so it
       // doesn't block other callers until the alarm sweeps it.
       await release();
-      return { confirmed: false, reason: 'slot_already_booked' };
+      const attempt_count = await bumpAttempts(ctx.kv, input.date, input.patientPhone);
+      return { confirmed: false, reason: 'slot_already_booked', attempt_count, should_waitlist: attempt_count >= WAITLIST_THRESHOLD };
     }
   }
 
@@ -124,6 +180,8 @@ export async function runBookAppointment(
     }
   }
 
+  // Successful booking: reset the failed-attempt counter so a future booking effort starts fresh.
+  await resetAttempts(ctx.kv, input.date, input.patientPhone);
   return { confirmed: true, appointment };
 }
 

@@ -115,7 +115,8 @@ ignores the token; harmless (nobody is calling yet), but do the ships back to ba
 
 ## Not built (decide: build or explain)
 
-- `attempt_count >= 3 -> waitlist` edge (needs a counter variable); a persisted waitlist
+- ~~`attempt_count >= 3 -> waitlist` edge (needs a counter variable); a persisted waitlist~~ **Built (this batch).**
+  See the "Upgrades" item 3 below for the mechanism and the honest trade-off it took to ship it.
 - A reminder function reading the same actor (shared-actor stretch; the reference binding pattern is already proven by the webhook)
 - Object storage (deliberately skipped)
 
@@ -134,10 +135,24 @@ Telnyx-hosted model. Suggested order: 1, 2, 3, then 5 if time allows, plus the m
       Stats stored in actor storage (`stats` key). Exposed via `/actor/stats` route on the HTTP surface
       and proxied through the webhook's `/actor/stats` GET route. Returns `{conversions, expirations,
       conversionRate}`. 31/31 day-slot-actor tests pass.
-- [ ] **3. `attempt_count >= 3` waitlist edge + a real waitlist.** Small `join_waitlist(date, service, patientName, patientPhone)`
-      MCP tool writing `waitlist/{date}/...` to KV; the waitlist message can then truthfully say the request was noted. Adds the
-      second variable-comparison edge from `docs/REQUIREMENTS.md`. Needs a counter variable (e.g. count `slot_already_booked` results
-      via the webhook or an `update_dynamic_variables` tool). Update the assistant flow test, the prompt-variable lint and the live suite.
+- [ ] **3. `attempt_count >= 3` waitlist edge + a real waitlist.** **Built (this batch, pending review/apply). A
+      true variable-comparison edge (mirrors `durationOver`) is on `n_book -> n_waitlist`; the counter is
+      computed server-side (per-caller-per-date KV, incremented on each `slot_already_booked`); `join_waitlist`
+      MCP tool persists `waitlist/{date}/{phone10}` so the waitlist message is now truthful; the
+      `update_dynamic_variables` shared tool (built-in Telnyx type, the only platform-supplied mid-call variable
+      write — see docs/LEARNINGS.md) lets the model mirror the count into the conversation variable the edge
+      reads. Honest trade-off, recorded in LEARNINGS.md: the count is server-authoritative, the edge decision
+      is LLM-gated (the model must call `update_attempt_count`); the safe-failure direction is more retries, not
+      a wrong waitlist. Pending before the assistant goes live: `node assistants/setup.mjs --apply` (creates
+      the new `update_dynamic_variables` shared tool), then `node assistants/update.mjs --apply` (pushes the new
+      edge / `tool_ids` / 4-tool MCP allowlist / reworded waitlist message to live Scheduling). 137/137 MCP +
+      54/54 flow + 44/44 webhook + 31/31 actor tests pass locally; dry-run of `update.mjs` reports it would
+      update each assistant. Live tests updated for the 4-tool allowlist + a waitlist end-to-end assertion.**
+      *Originally:* Small `join_waitlist(date, service, patientName, patientPhone)` MCP tool writing
+      `waitlist/{date}/...` to KV; the waitlist message can then truthfully say the request was noted. Adds the
+      second variable-comparison edge from `docs/REQUIREMENTS.md`. Needs a counter variable (e.g. count
+      `slot_already_booked` results via the webhook or an `update_dynamic_variables` tool). Update the
+      assistant flow test, the prompt-variable lint and the live suite.
 - [ ] **4. A reminder function that reads the same actor** (real "shared actors" demo): a scheduled function asks the actor, through
       the webhook function's proxy route, for tomorrow's bookings and logs/sends reminders. Third function, clean division of labour.
 - [x] **5. Atomic multi-slot holds in the actor**: implemented. `holdSlot` now accepts `durationMinutes`
@@ -148,8 +163,10 @@ Telnyx-hosted model. Suggested order: 1, 2, 3, then 5 if time allows, plus the m
       tests pass; 43/43 webhook tests pass.
 - [x] **6. `/health` reports version and secret presence**: implemented on all 3 functions. Returns `{status, version, secrets: {NAME: boolean}}`.
       Probe test verifies deployed `/health` endpoints. Needs ship (`npm run bundle && telnyx-edge ship`) to take effect live.
-- [ ] **Model comparison note**: run one small task (e.g. item 3) with two Telnyx-hosted models, write a few lines on what worked and what
-      did not. The brief explicitly asks for the model choice and dogfooding experience.
+- [x] **Model comparison note**: written up in README.md, "Model comparison and dogfooding notes" —
+      GLM-5.2 → Kimi-K2.6 → GLM-5.2 again, with the actual reasons for each switch (autonomy/confirmation
+      friction, scope-creep/token burn, code quality, context-window/session-restart behavior), not just
+      a generic "both were good" summary.
 - [ ] **Prompt quality pass with scripted callers** — PARTIALLY MIGRATED to Telnyx Portal AI Tests
   (see `scripts/create-telnyx-tests.mjs`). Remaining: a real interrupt test and a mind-changer test
   that exercise turn-taking and barge-in (voice-only, not testable in chat).
@@ -194,12 +211,33 @@ the model does not confidently classify, the conversation stays on the node and 
 | Scheduling | `n_manage` | **Medium** | Caller changes topic mid-cancel/reschedule, or tool returns an unexpected error |
 | **Billing** | `n_billing` | **HIGH** | Caller asks a general FAQ (hours, location) — Billing has **no FAQ node and no handoff to Front Desk**, so the call gets stuck |
 
-Fixes to apply before demo day (implemented; require live-call verification):
-- [x] Add `e_intent_unclear` → loop back or ask for clarification on Front Desk intent nodes *(implemented, tested offline — needs live ambiguous-caller verification)*
-- [x] Add `e_faq_unclear` → stay on FAQ or route to goodbye on Front Desk FAQ node *(implemented, tested offline — needs live off-script follow-up verification)*
-- [x] Add `e_book_unclear` → retry or escalate on Scheduling book node (covers unexpected tool errors) *(implemented, tested offline — needs live tool-error verification)*
-- [x] Add `e_manage_unclear` → retry or escalate on Scheduling manage node *(implemented, tested offline — needs live changed-topic verification)*
-- [x] **Add `e_billing_faq` → handoff to Front Desk** so Billing can route general questions out *(implemented, tested offline — needs live general-question-in-Billing verification)*
+**First `update.mjs --apply` attempt failed outright** — Telnyx's API rejected `e_billing_faq` with error
+10015: `type: 'default'` edges are only valid on tool/speak nodes, and all 6 of the new fallback edges
+(the 5 above + one more from a codegen loop) were `default` edges attached to **prompt** nodes. A second,
+related constraint was found the same way: Telnyx also rejects self-looping edges
+(`start_node_id === target`), which `e_faq_unclear`'s original loop-to-itself design hit too.
+
+**Fixed** by converting all 6 to `llm(...)` catch-all conditions, and adding a shared `n_clarify` speak
+node that Front Desk's three prompt-node fallbacks (`n_intent`, `n_intent_returning`, `n_faq`) route to —
+a speak node can legally carry the `default` edge back to `n_intent`, sidestepping both constraints.
+Scheduling's own fallbacks (`n_book`, `n_manage`) stay local (retry within Scheduling) rather than
+bouncing to `n_clarify`, which is the right call since the caller hasn't left that sub-flow.
+
+**Verified, not just claimed** (after the `40cbcf7` incident where a similar checklist turned out to be
+aspirational — see the code-review log above): 51/51 offline tests pass, AND the live API was queried
+directly for all 3 assistants to confirm zero `default` edges on non-speak/tool nodes and zero self-loops
+exist on the deployed flows, not just locally.
+
+- [x] Add `e_intent_unclear` → `n_clarify` (Front Desk) — **live-verified structurally**; still needs an
+      actual ambiguous-caller phone call to confirm the LLM condition fires naturally
+- [x] Add `e_faq_unclear` → `n_clarify` (Front Desk) — same: structurally live, needs a real off-script
+      follow-up call to verify
+- [x] Add `e_book_unclear` → `n_offer` (Scheduling) — structurally live, needs a real tool-error scenario
+      to verify (hard to trigger deliberately without faking a tool failure)
+- [x] Add `e_manage_unclear` → `n_collect` (Scheduling) — structurally live, needs a real changed-topic
+      call to verify
+- [x] Add `e_billing_faq` → Front Desk handoff (Billing) — structurally live, needs a real
+      general-question-during-billing call to verify
 
 ## Live URLs
 

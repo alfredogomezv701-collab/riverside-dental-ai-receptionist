@@ -24,7 +24,7 @@ const flows = {
   frontDesk: frontDeskAssistant(ids),
   billing: billingAssistant(ids),
 };
-const mcpToolNames = ['check_availability', 'book_appointment', 'cancel_or_reschedule_appointment'];
+const mcpToolNames = ['check_availability', 'book_appointment', 'cancel_or_reschedule_appointment', 'join_waitlist'];
 
 for (const [name, a] of Object.entries(flows)) {
   const fl = a.conversation_flow;
@@ -129,7 +129,7 @@ describe('front desk', () => {
 describe('scheduling assistant', () => {
   const s = flows.scheduling;
 
-  it('attaches exactly the three real MCP tools', () => {
+  it('attaches exactly the four real MCP tools (booking, availability, cancel/reschedule, waitlist)', () => {
     assert.deepEqual(s.mcp_servers[0].allowed_tools.slice().sort(), mcpToolNames.slice().sort());
   });
 
@@ -141,12 +141,84 @@ describe('scheduling assistant', () => {
     assert.deepEqual(registered.sort(), s.mcp_servers[0].allowed_tools.slice().sort());
   });
 
-  it('routes waitlist_mode == "true" (KV flag) to the waitlist node, on the new-booking path only', () => {
+  it('routes waitlist_mode == "true" (KV flag) to the waitlist JOIN node (collects name/phone, persists, THEN speaks), on the new-booking path only', () => {
     const e = s.conversation_flow.edges.find((x) => x.id === 'e_offer_waitlist');
     assert.equal(e.start_node_id, 'n_offer');
     assert.equal(e.condition.expression.left.name, 'waitlist_mode');
     assert.equal(e.condition.expression.right.value, 'true');
+    // The flag path no longer jumps straight to the speak node — it routes through n_waitlist_join,
+    // which collects name+phone and calls join_waitlist before reaching the message. Without this,
+    // the n_waitlist speak node (which says the request was noted) fires before any persistence
+    // has happened, since the flag path skips n_confirm/n_book entirely. See docs/LEARNINGS.md
+    // "Say what you store".
+    assert.equal(e.target.node_id, 'n_waitlist_join');
+  });
+
+  it('n_waitlist_join is a prompt node that instructs the model to call join_waitlist before reaching the waitlist message', () => {
+    const j = s.conversation_flow.nodes.find((n) => n.id === 'n_waitlist_join');
+    assert.ok(j, 'n_waitlist_join node missing');
+    assert.equal(j.type, 'prompt');
+    assert.match(j.instructions, /join_waitlist/, 'n_waitlist_join must instruct the model to call join_waitlist');
+  });
+
+  it('every inbound path to the n_waitlist speak node is honest about persistence (the message claims the request was "noted")', () => {
+    // Two paths can reach n_waitlist: (a) the attempt_count >= 3 edge from n_book, where n_book's
+    // instructions call join_waitlist first; (b) the queued:true edge from n_waitlist_join (the
+    // flag path). Both require join_waitlist to have returned queued:true before the message is
+    // spoken. Asserting the contract:
+    //   1. n_book instructions reference join_waitlist AND should_waitlist:true;
+    //   2. n_waitlist_join instructions reference join_waitlist AND queued:true;
+    //   3. n_waitlist_join has an outbound edge to n_waitlist gated on join_waitlist succeeding,
+    //      and a separate honest-failure edge for the queued:false case.
+    const msg = (id) => s.conversation_flow.nodes.find((n) => n.id === id).message;
+    assert.match(msg('n_waitlist'), /noted/i, 'the waitlist message claims the request was noted');
+    const book = s.conversation_flow.nodes.find((n) => n.id === 'n_book').instructions;
+    assert.match(book, /join_waitlist/, 'attempt_count path: n_book instructions must tell the model to call join_waitlist before reaching the waitlist message');
+    assert.match(book, /should_waitlist.*true/, 'n_book instructions must reference the should_waitlist:true signal');
+    const join = s.conversation_flow.nodes.find((n) => n.id === 'n_waitlist_join').instructions;
+    assert.match(join, /join_waitlist/, 'flag path: n_waitlist_join instructions must tell the model to call join_waitlist');
+    assert.match(join, /queued.*true/, 'n_waitlist_join instructions must gate the waitlist message on join_waitlist returning queued:true');
+
+    const out = s.conversation_flow.edges.filter((e) => e.start_node_id === 'n_waitlist_join');
+    assert.ok(out.some((e) => e.id === 'e_waitlist_join_done' && e.target.node_id === 'n_waitlist'), 'queued:true path -> n_waitlist');
+    assert.ok(out.some((e) => e.id === 'e_waitlist_join_fail' && e.target.node_id === 'n_escalate'), 'queued:false path -> n_escalate (not the truth-only message)');
+    // Reachability check: every inbound path to n_waitlist must come from a node that calls
+    // join_waitlist first (n_book or n_waitlist_join). No path from n_offer, n_collect, n_confirm,
+    // etc. should jump directly to n_waitlist — those would skip persistence.
+    const inbound = s.conversation_flow.edges.filter((e) => e.target.node_id === 'n_waitlist');
+    assert.deepEqual(inbound.map((e) => e.start_node_id).sort(), ['n_book', 'n_waitlist_join'], 'only the two persistence-first paths reach the waitlist speak node');
+  });
+
+  // The second variable-comparison edge required by docs/REQUIREMENTS.md: `attempt_count >= 3 -> waitlist`.
+  it('has an attempt_count >= 3 -> waitlist variable-comparison edge on n_book (mirrors durationOver)', () => {
+    const e = s.conversation_flow.edges.find((x) => x.id === 'e_book_waitlist');
+    assert.ok(e, 'e_book_waitlist edge missing');
+    assert.equal(e.start_node_id, 'n_book');
     assert.equal(e.target.node_id, 'n_waitlist');
+    assert.equal(e.condition.type, 'expression');
+    assert.equal(e.condition.expression.type, 'comparison');
+    assert.equal(e.condition.expression.op, '>=');
+    assert.equal(e.condition.expression.left.type, 'variable');
+    assert.equal(e.condition.expression.left.name, 'attempt_count');
+    assert.equal(e.condition.expression.right.type, 'number_literal');
+    assert.equal(e.condition.expression.right.value, 3);
+  });
+
+  it('declares e_book_waitlist after the duration edge but before the LLM edges on n_book (variable-comparison precedence: duration escalation > attempt threshold > LLM)', () => {
+    const out = s.conversation_flow.edges.filter((e) => e.start_node_id === 'n_book');
+    const idxWaitlist = out.findIndex((e) => e.id === 'e_book_waitlist');
+    const idxSlow = out.findIndex((e) => e.condition.type === 'expression' && e.condition.expression.left.name === 'telnyx_conversation_duration_secs');
+    const firstLlm = out.findIndex((e) => e.condition.type === 'llm');
+    assert.ok(idxSlow >= 0 && idxWaitlist > idxSlow, 'duration escalation must be checked before attempt threshold (a 5-min call escalates regardless of attempts)');
+    assert.ok(firstLlm >= 0 && idxWaitlist < firstLlm, 'attempt threshold (variable comparison) must be checked before any LLM edge on voice');
+    // No other variable-comparison edge on n_book — the only two deterministic edges are duration and attempts.
+    const varEdges = out.filter((e) => e.condition.type === 'expression');
+    assert.equal(varEdges.length, 2, 'exactly two variable-comparison edges on n_book (duration + attempt_count)');
+    assert.deepEqual(varEdges.map((e) => e.id).sort(), ['e_book_slow', 'e_book_waitlist']);
+  });
+
+  it('declares attempt_count default of "0" so the edge has a defined left-hand side at conversation start', () => {
+    assert.equal(s.dynamic_variables.attempt_count, '0');
   });
 
   // n_collect is where cancel/reschedule intent is gathered too: a waitlist edge there told people
@@ -161,11 +233,22 @@ describe('scheduling assistant', () => {
     assert.equal(edges.find((e) => e.id === 'e_manage_done').target.node_id, 'n_closing_manage');
   });
 
-  it('does not say "see you" after a cancellation, and does not claim to have recorded a waitlist request', () => {
+  it('does not say "see you" after a cancellation; the waitlist message claims recording ONLY because join_waitlist is called first', () => {
     const msg = (id) => s.conversation_flow.nodes.find((n) => n.id === id).message;
     assert.match(msg('n_closing'), /see you/i);
     assert.doesNotMatch(msg('n_closing_manage'), /see you/i);
-    assert.doesNotMatch(msg('n_waitlist'), /noted|recorded|added you|call you as soon/i);
+    // The waitlist message now says the request was "noted" — this is only truthful because every
+    // inbound path to n_waitlist requires book_appointment to have returned should_waitlist:true
+    // (3 failed attempts) AND the n_book instructions direct the model to call join_waitlist first,
+    // which persists waitlist/{date}/{phone10} to KV. Asserting that contract:
+    //   1. the message is allowed to claim not only "noted" but also that the team will follow up;
+    //   2. the n_book instructions MUST mention join_waitlist (so the persistence actually happens
+    //      before the speak node runs — see docs/LEARNINGS.md "Say what you store").
+    assert.match(msg('n_waitlist'), /noted/i);
+    assert.match(msg('n_waitlist'), /team will be in touch/i);
+    const book = s.conversation_flow.nodes.find((n) => n.id === 'n_book').instructions;
+    assert.match(book, /join_waitlist/, 'n_book instructions must tell the model to call join_waitlist before reaching the waitlist message');
+    assert.match(book, /should_waitlist.*true/, 'n_book instructions must reference the should_waitlist:true signal from book_appointment');
   });
 
   it('lets callers out of every dead end: failed reschedule, unknown appointment, changed mind at the offer', () => {
@@ -251,10 +334,14 @@ describe('all assistants', () => {
     }
   });
 
-  it('the webhook returns exactly the variables the assistants declare defaults for', () => {
+  it('the webhook returns exactly the variables the assistants declare defaults for, except attempt_count (set mid-call by the update_dynamic_variables tool)', () => {
+    // The assistant defaults and the webhook return shape are kept in sync for the conversation-start
+    // variables. attempt_count is the deliberate exception: it starts at "0" (declared here as a
+    // default so the variable-comparison edge has a defined left-hand side) and is then updated
+    // mid-call by the update_dynamic_variables shared tool — the webhook never returns it.
     assert.deepEqual(
       Object.keys(all.frontDesk.dynamic_variables).sort(),
-      ['appointment_count', 'is_returning_patient', 'next_appointment', 'next_appointment_id', 'patient_name', 'waitlist_mode'],
+      ['appointment_count', 'attempt_count', 'is_returning_patient', 'next_appointment', 'next_appointment_id', 'patient_name', 'waitlist_mode'],
     );
   });
 
@@ -275,52 +362,53 @@ describe('edge-case fallback edges (deterministic so callers never get stuck)', 
   const sched = flows.scheduling.conversation_flow;
   const bill = flows.billing.conversation_flow;
   const out = (fl, id) => fl.edges.filter((e) => e.start_node_id === id);
-  const hasDflt = (fl, from) => out(fl, from).some((e) => e.condition.type === 'default');
-  const dfltTarget = (fl, from) => out(fl, from).find((e) => e.condition.type === 'default')?.target;
+  const hasLlmFallback = (fl, from) => out(fl, from).some((e) => e.condition.type === 'llm');
+  const llmFallbackTarget = (fl, from) => out(fl, from).find((e) => e.condition.type === 'llm' && e.condition.prompt.includes('does not match any other'))?.target;
 
-  it('Front Desk intent nodes have a default loop-back for ambiguous input', () => {
+  it('Front Desk intent nodes have an LLM fallback to n_clarify for ambiguous input', () => {
     for (const n of ['n_intent', 'n_intent_returning']) {
-      assert.ok(hasDflt(fd, n), `${n} missing default edge`);
-      const t = dfltTarget(fd, n);
-      assert.equal(t.node_id, n, `${n} default should loop back to itself, not drift`);
+      assert.ok(hasLlmFallback(fd, n), `${n} missing LLM fallback edge`);
+      const t = llmFallbackTarget(fd, n);
+      assert.equal(t.node_id, 'n_clarify', `${n} LLM fallback should route to clarify node`);
     }
   });
 
-  it('Front Desk FAQ node has a default loop-back for off-script follow-ups', () => {
-    assert.ok(hasDflt(fd, 'n_faq'), 'n_faq missing default edge');
-    const t = dfltTarget(fd, 'n_faq');
-    assert.equal(t.node_id, 'n_faq', 'n_faq default should stay on FAQ');
+  it('Front Desk FAQ node has an LLM fallback to n_clarify for off-script follow-ups', () => {
+    assert.ok(hasLlmFallback(fd, 'n_faq'), 'n_faq missing LLM fallback edge');
+    const t = llmFallbackTarget(fd, 'n_faq');
+    assert.equal(t.node_id, 'n_clarify', 'n_faq LLM fallback should route to clarify node');
   });
 
-  it('Scheduling n_book has a default fallback to n_offer for unexpected tool errors', () => {
-    assert.ok(hasDflt(sched, 'n_book'), 'n_book missing default edge');
-    const t = dfltTarget(sched, 'n_book');
-    assert.equal(t.node_id, 'n_offer', 'n_book default should return to fresh availability');
+  it('Scheduling n_book has an LLM fallback to n_offer for unexpected tool errors', () => {
+    assert.ok(hasLlmFallback(sched, 'n_book'), 'n_book missing LLM fallback edge');
+    const t = llmFallbackTarget(sched, 'n_book');
+    assert.equal(t.node_id, 'n_offer', 'n_book LLM fallback should return to fresh availability');
   });
 
-  it('Scheduling n_manage has a default fallback to n_collect for changed topic or unexpected errors', () => {
-    assert.ok(hasDflt(sched, 'n_manage'), 'n_manage missing default edge');
-    const t = dfltTarget(sched, 'n_manage');
-    assert.equal(t.node_id, 'n_collect', 'n_manage default should restart intent collection');
+  it('Scheduling n_manage has an LLM fallback to n_collect for changed topic or unexpected errors', () => {
+    assert.ok(hasLlmFallback(sched, 'n_manage'), 'n_manage missing LLM fallback edge');
+    const t = llmFallbackTarget(sched, 'n_manage');
+    assert.equal(t.node_id, 'n_collect', 'n_manage LLM fallback should restart intent collection');
   });
 
-  it('Billing n_billing has a default hand-off to Front Desk for general questions', () => {
-    assert.ok(hasDflt(bill, 'n_billing'), 'n_billing missing default edge');
-    const t = dfltTarget(bill, 'n_billing');
-    assert.equal(t.type, 'assistant', 'n_billing default should hand off to another assistant');
-    assert.equal(t.assistant_id, ids.frontDeskId, 'n_billing default should go to Front Desk');
+  it('Billing n_billing has an LLM hand-off to Front Desk for general questions', () => {
+    assert.ok(hasLlmFallback(bill, 'n_billing'), 'n_billing missing LLM fallback edge');
+    const t = llmFallbackTarget(bill, 'n_billing');
+    assert.equal(t.type, 'assistant', 'n_billing LLM fallback should hand off to another assistant');
+    assert.equal(t.assistant_id, ids.frontDeskId, 'n_billing LLM fallback should go to Front Desk');
     assert.equal(t.voice_mode, 'unified', 'hand-off should use unified voice mode');
   });
 
-  it('every prompt-only node in all assistants now has at least one deterministic way forward', () => {
-    // All prompt nodes should have either a default edge OR an expression edge (e.g. duration).
-    // The audit specifically covered nodes with *only* LLM edges.
+  it('every prompt-only node in all assistants now has at least one fallback way forward', () => {
+    // Default edges are only valid on speak/tool nodes; prompt nodes must use
+    // LLM fallback edges instead. Each prompt node should have either an LLM
+    // fallback edge OR an expression edge (e.g. duration) so callers never stall.
     for (const [name, a] of Object.entries(flows)) {
       const fl = a.conversation_flow;
       for (const n of fl.nodes.filter((x) => x.type === 'prompt')) {
         const edges = out(fl, n.id);
-        const hasDeterministic = edges.some((e) => e.condition.type === 'default' || e.condition.type === 'expression');
-        assert.ok(hasDeterministic, `${name}/${n.id} has no deterministic fallback edge`);
+        const hasFallback = edges.some((e) => (e.condition.type === 'llm' && e.condition.prompt?.includes('does not match any other')) || e.condition.type === 'expression');
+        assert.ok(hasFallback, `${name}/${n.id} has no fallback edge`);
       }
     }
   });
@@ -447,8 +535,8 @@ describe.skip('AI routing verification against edge conditions', () => {
     });
   }
 
-  // Smoke test for each new fallback default edge.
-  const defaultEdges = [
+  // Smoke test for each new fallback LLM catch-all edge.
+  const fallbackEdges = [
     { assistant: 'frontDesk', node: 'n_intent', edge: 'e_n_intent_unclear' },
     { assistant: 'frontDesk', node: 'n_intent_returning', edge: 'e_n_intent_returning_unclear' },
     { assistant: 'frontDesk', node: 'n_faq', edge: 'e_faq_unclear' },
@@ -457,12 +545,12 @@ describe.skip('AI routing verification against edge conditions', () => {
     { assistant: 'billing', node: 'n_billing', edge: 'e_billing_faq' },
   ];
 
-  for (const { assistant, node, edge } of defaultEdges) {
-    it(`default edge ${edge} exists on ${assistant}.${node}`, () => {
+  for (const { assistant, node, edge } of fallbackEdges) {
+    it(`fallback edge ${edge} exists on ${assistant}.${node}`, () => {
       const fl = flows[assistant].conversation_flow;
       const e = fl.edges.find((x) => x.id === edge);
       assert.ok(e, `${edge} not found`);
-      assert.equal(e.condition.type, 'default');
+      assert.equal(e.condition.type, 'llm');
       assert.equal(e.start_node_id, node);
     });
   }

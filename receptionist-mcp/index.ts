@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { registerCheckAvailability } from './src/tools/check_availability_handler.js';
 import { registerBookAppointment } from './src/tools/book_appointment_handler.js';
 import { registerCancelOrReschedule } from './src/tools/cancel_or_reschedule_appointment_handler.js';
+import { registerJoinWaitlist } from './src/tools/join_waitlist_handler.js';
 import { createHttpDaySlotNamespace } from './src/actors/day_slot_http_client.js';
 import { bearerMatches } from './src/auth.js';
 import { redact } from './src/log.js';
@@ -85,6 +86,7 @@ app.post('/mcp', async (req, res) => {
   registerCheckAvailability(server, ctx);
   registerBookAppointment(server, ctx);
   registerCancelOrReschedule(server, ctx);
+  registerJoinWaitlist(server, ctx);
 
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on('close', () => {

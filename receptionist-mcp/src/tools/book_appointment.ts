@@ -47,6 +47,20 @@ export interface BookAppointmentResult {
   detail?: string;
   /** True when this exact booking already existed for this patient (safe retry). */
   alreadyBookedByYou?: boolean;
+  /**
+   * How many times this caller has now hit slot_already_booked for this date during the current
+   * booking effort (server-side counter, incremented on each slot_already_booked return, reset to 0
+   * on a successful confirm). The assistant is told to mirror this into the `attempt_count`
+   * conversation variable (via the update_dynamic_variables tool) so the n_book -> n_waitlist edge's
+   * `attempt_count >= 3` comparison can fire. 0 on success or non-booking-failure paths.
+   */
+  attempt_count?: number;
+  /**
+   * True when attempt_count has reached the waitlist threshold (3) on this call, signalling the
+   * assistant should join the caller to the waitlist and move to the waitlist node. Set together
+   * with attempt_count so the assistant has a deterministic flag, not just a count to compare.
+   */
+  should_waitlist?: boolean;
 }
 
 export const BOOK_APPOINTMENT_TOOL_NAME = 'book_appointment';
@@ -62,3 +76,15 @@ export const BOOK_APPOINTMENT_TOOL_DESCRIPTION =
 
 export const BOOKING_KEY = (date: string, start: string) => `booking/${date}/${start.replace(/:/g, '')}`;
 export const APPOINTMENT_KEY = (appointmentId: string) => `appointment/${appointmentId}`;
+
+// Per-caller, per-date failed-booking counter. Incremented every time book_appointment returns
+// slot_already_booked, reset to 0 on a successful confirm. Scoped by phone+date so the count is for
+// the specific day the caller is fighting for; a past date's counter is naturally irrelevant. This
+// is the server-side source of truth the attempt_count variable the n_book -> n_waitlist edge reads
+// is meant to mirror (the assistant copies it into the conversation variable via the
+// update_dynamic_variables tool after each book_appointment result that includes attempt_count).
+export const WAITLIST_ATTEMPTS_KEY = (date: string, phone: string) =>
+  `waitlist_attempts/${date}/${phone.replace(/\D/g, '').slice(-10)}`;
+
+/** The threshold at which the waitlist edge should fire. Kept here so tests and the flow align. */
+export const WAITLIST_THRESHOLD = 3;
