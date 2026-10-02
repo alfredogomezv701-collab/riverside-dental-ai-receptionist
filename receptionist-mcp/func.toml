@@ -5,12 +5,19 @@ func_name = "receptionist-mcp"
 # For environment variables and secrets:
 # Use telnyx-edge secrets add <name> <value>
 # Secrets are injected as environment variables into all your functions
-#   SHARED_SECRET     — inbound MCP bearer token (telnyx-edge secrets add SHARED_SECRET "$(openssl rand -hex 32)")
-#   TELNYX_API_KEY     — only if a tool calls the Telnyx API directly
-#   ACTOR_PROXY_URL    — receptionist-webhook's invoke URL (holds the DAY_SLOT actor binding; this
-#                        classic project can't bind an actor directly — see docs/ARCHITECTURE.md,
-#                        "Cross-function actor access")
-#   ACTOR_PROXY_SECRET — bearer token for calling receptionist-webhook's /actor/* routes
+#   SHARED_SECRET          — inbound MCP bearer token (telnyx-edge secrets add SHARED_SECRET "$(openssl rand -hex 32)")
+#   ACTOR_PROXY_URL        — receptionist-webhook's invoke URL (holds the DAY_SLOT actor binding; this
+#                            classic project can't bind an actor directly — see docs/ARCHITECTURE.md,
+#                            "Cross-function actor access")
+#   ACTOR_PROXY_SECRET     — bearer token for calling receptionist-webhook's /actor/* routes
+#   TELNYX_API_KEY         — a REAL Telnyx API key (unlike the above, which are our own bearers
+#                            between our own functions). Used by book_appointment to send the
+#                            booking-confirmation SMS via POST /v2/messages. Both this and
+#                            CLINIC_SMS_FROM_NUMBER unset = SMS is simply skipped, booking unaffected.
+#   CLINIC_SMS_FROM_NUMBER — the clinic's Telnyx number, E.164. MUST have a messaging profile
+#                            attached (telnyx-edge doesn't manage this — do it once in the Portal or
+#                            via PATCH /v2/phone_numbers/{id}/messaging) or the Messaging API
+#                            returns a clear per-message error, not a silent failure.
 
 [storage.kv.CACHE]
 id = "3c826291-8337-4141-821c-080f0bb32c28"

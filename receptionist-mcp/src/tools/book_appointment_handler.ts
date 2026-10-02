@@ -2,8 +2,9 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KvNamespace } from '@telnyx/edge-runtime';
 import type { DaySlotNamespace } from '../actors/day_slot_binding.js';
 import { findConflict, loadDayBookings, validateSlot } from '../calendar.js';
-import { logToolCall } from '../log.js';
+import { logToolCall, type ReportExtra } from '../log.js';
 import { digitsOf, PATIENT_KEY, readPatient, withAppointment, writePatient } from '../patients.js';
+import { sendBookingConfirmationSms } from '../sms.js';
 import {
   BOOK_APPOINTMENT_TOOL_NAME,
   BOOK_APPOINTMENT_TOOL_DESCRIPTION,
@@ -23,6 +24,11 @@ export interface ToolContext {
   requestId?: string;
   /** Clinic-local "today" (YYYY-MM-DD); injectable so tests don't rot as the calendar moves. */
   today?: string;
+  /** Real Telnyx API key (unlike every other secret here, which is our own bearer between our own
+   *  functions) — only used to send the booking-confirmation SMS. Both unset is the normal/dev
+   *  case: SMS is simply skipped, booking is unaffected either way. */
+  telnyxApiKey?: string;
+  smsFromNumber?: string;
 }
 
 const samePhone = (a: string, b: string) => digitsOf(a).slice(-10) === digitsOf(b).slice(-10);
@@ -72,9 +78,29 @@ async function resetAttempts(kv: KvNamespace | undefined, date: string, phone: s
   }
 }
 
+/**
+ * Fire-and-forget: a booking is already real by the time this runs, so an SMS failure (bad
+ * number, Telnyx error, no credentials configured) must never surface as a booking failure — only
+ * logged, via the report callback, for observability. Not awaited by the caller's return value.
+ */
+async function sendConfirmationBestEffort(
+  ctx: ToolContext,
+  appointment: AppointmentRecord,
+  report?: ReportExtra,
+): Promise<void> {
+  if (!ctx.telnyxApiKey || !ctx.smsFromNumber) return;
+  try {
+    const result = await sendBookingConfirmationSms(ctx.telnyxApiKey, ctx.smsFromNumber, appointment.patientPhone, appointment);
+    report?.({ sms_sent: result.sent, ...(result.error ? { sms_error: result.error } : {}) });
+  } catch (err) {
+    report?.({ sms_sent: false, sms_error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 export async function runBookAppointment(
   input: BookAppointmentInput,
   ctx: ToolContext,
+  report?: ReportExtra,
 ): Promise<BookAppointmentResult> {
   const bad = validateSlot(input.service, input.date, input.start, ctx.today);
   if (bad) return { confirmed: false, reason: bad.reason, detail: bad.detail };
@@ -182,6 +208,9 @@ export async function runBookAppointment(
 
   // Successful booking: reset the failed-attempt counter so a future booking effort starts fresh.
   await resetAttempts(ctx.kv, input.date, input.patientPhone);
+  // Awaited (so the log line captures it) but never allowed to change the result above — the
+  // appointment is already real by this point regardless of whether the text goes out.
+  await sendConfirmationBestEffort(ctx, appointment, report);
   return { confirmed: true, appointment };
 }
 
@@ -193,8 +222,8 @@ export function registerBookAppointment(server: McpServer, ctx: ToolContext): vo
       inputSchema: bookAppointmentInputSchema.shape,
     },
     async (input: BookAppointmentInput) => {
-      const result = await logToolCall(BOOK_APPOINTMENT_TOOL_NAME, ctx.requestId, { caller: input.patientPhone }, () =>
-        runBookAppointment(input, ctx),
+      const result = await logToolCall(BOOK_APPOINTMENT_TOOL_NAME, ctx.requestId, { caller: input.patientPhone }, (report) =>
+        runBookAppointment(input, ctx, report),
       );
       return {
         content: [

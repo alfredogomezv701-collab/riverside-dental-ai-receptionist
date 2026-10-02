@@ -32,6 +32,16 @@ const sharedSecret = process.env.SHARED_SECRET;
 const port = parseInt(process.env.PORT || '8080', 10);
 const VERSION = process.env.VERSION || 'dev';
 
+// Booking-confirmation SMS: a real Telnyx API key (unlike every other secret here, which is our
+// own bearer between our own functions) plus the clinic's Telnyx number (must have a messaging
+// profile attached — a voice-only number returns a clear error from the Messaging API, not a
+// silent failure). Both unset is the normal/dev case: SMS is simply skipped.
+const telnyxApiKey = process.env.TELNYX_API_KEY;
+const smsFromNumber = process.env.CLINIC_SMS_FROM_NUMBER;
+if (!(telnyxApiKey && smsFromNumber)) {
+  console.warn('TELNYX_API_KEY/CLINIC_SMS_FROM_NUMBER not set - booking-confirmation SMS is disabled.');
+}
+
 function secretPresent(name: string): boolean {
   const v = process.env[name];
   return v !== undefined && v !== '';
@@ -47,6 +57,8 @@ app.get('/health', (_req, res) => res.status(200).json({
     SHARED_SECRET: secretPresent('SHARED_SECRET'),
     ACTOR_PROXY_SECRET: secretPresent('ACTOR_PROXY_SECRET'),
     ACTOR_PROXY_URL: secretPresent('ACTOR_PROXY_URL'),
+    TELNYX_API_KEY: secretPresent('TELNYX_API_KEY'),
+    CLINIC_SMS_FROM_NUMBER: secretPresent('CLINIC_SMS_FROM_NUMBER'),
   },
 }));
 app.get('/health/liveness', (_req, res) => res.status(200).send('OK'));
@@ -82,6 +94,8 @@ app.post('/mcp', async (req, res) => {
     kv: env.CACHE,
     daySlot: daySlotFor(requestId),
     requestId,
+    telnyxApiKey,
+    smsFromNumber,
   };
   registerCheckAvailability(server, ctx);
   registerBookAppointment(server, ctx);
