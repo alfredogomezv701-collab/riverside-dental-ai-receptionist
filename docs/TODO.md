@@ -42,11 +42,11 @@ boundaries in webhook tests too). 3 real findings:
 
 | Piece | State |
 |---|---|
-| `day-slot-actor` (Stateful Actor, alarm) | shipped, 17 tests |
-| `receptionist-webhook` (dynamic variables + actor proxy) | shipped and verified live, 34 tests (token auth, phone validation, multi-appointment record) |
-| `receptionist-mcp` (3 tools) | shipped and verified live, 103 tests |
-| Assistants (Front Desk, Scheduling, Billing) | created via API and updated to the current definitions (`update.mjs --apply` run) |
-| `assistants/` tests | 51 offline (incl. fallback-edge & AI routing stubs); live suite trimmed to 1 LLM-based E2E booking test + no-LLM backend suite; 4 Telnyx Portal AI Tests ready to create via `scripts/create-telnyx-tests.mjs` |
+| `day-slot-actor` (Stateful Actor, alarm) | shipped, 31 tests |
+| `receptionist-webhook` (dynamic variables + actor proxy) | shipped and verified live, 44 tests |
+| `receptionist-mcp` (4 tools incl. `join_waitlist`) | shipped and verified live (incl. `kv_reads`/`lookup_ms` latency breakdown on `check_availability`), 137 tests |
+| Assistants (Front Desk, Scheduling, Billing) | `setup.mjs --apply` + `update.mjs --apply` both run clean after fixing 3 real bugs hit along the way (double-`idOf` unwrap, `tool_ids` vs. resolved `tools` on GET, missing `.data` envelope on `/ai/mcp_servers/{id}` — see docs/LEARNINGS.md). Live-verified: Scheduling has `n_waitlist_join`/`e_book_waitlist`, the `update_dynamic_variables` tool attached, and the MCP server's `allowed_tools` has all 4 tools (confirmed by `test:probe`'s "lists exactly the four tools" assertion) |
+| `assistants/` tests | 56 offline; live suite trimmed to 1 LLM-based E2E booking test + no-LLM backend suite; probe suite (free, no inference) passing against the newly-deployed state |
 | Phone number | assigned to Front Desk; real call succeeded 2026-09-30 |
 | README / demo script | written; phone number filled in (`+1 (218) 506-9277`) with verified-numbers disclaimer |
 

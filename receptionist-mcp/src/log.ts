@@ -27,22 +27,32 @@ export const outcomeOf = (r: unknown): string => {
   return 'ok';
 };
 
+/** Lets a wrapped tool call attach extra fields (e.g. a KV-read count/timing breakdown) to its own
+ *  log line, reported during execution rather than known upfront. Optional — existing zero-arg
+ *  callers are unaffected (JS/TS both allow a `() => Promise<T>` where `(report) => Promise<T>` is
+ *  expected; the extra parameter is simply never passed to them). */
+export type ReportExtra = (extra: Record<string, unknown>) => void;
+
 export async function logToolCall<T>(
   tool: string,
   requestId: string | undefined,
   fields: { caller?: string } & Record<string, unknown>,
-  fn: () => Promise<T>,
+  fn: (report: ReportExtra) => Promise<T>,
   sink: (line: string) => void = console.log,
 ): Promise<T> {
   const started = Date.now();
   const { caller, ...rest } = fields;
-  const base = { ts: new Date().toISOString(), service: 'receptionist-mcp', request_id: requestId, tool, caller: maskPhone(caller), ...rest };
+  let extra: Record<string, unknown> = {};
+  const report: ReportExtra = (fields) => {
+    extra = { ...extra, ...fields };
+  };
+  const base = () => ({ ts: new Date().toISOString(), service: 'receptionist-mcp', request_id: requestId, tool, caller: maskPhone(caller), ...rest, ...extra });
   try {
-    const result = await fn();
-    sink(JSON.stringify({ ...base, outcome: outcomeOf(result), latency_ms: Date.now() - started }));
+    const result = await fn(report);
+    sink(JSON.stringify({ ...base(), outcome: outcomeOf(result), latency_ms: Date.now() - started }));
     return result;
   } catch (err) {
-    sink(JSON.stringify({ ...base, outcome: 'error', error: redact(err instanceof Error ? err.message : String(err)), latency_ms: Date.now() - started }));
+    sink(JSON.stringify({ ...base(), outcome: 'error', error: redact(err instanceof Error ? err.message : String(err)), latency_ms: Date.now() - started }));
     throw err;
   }
 }

@@ -119,7 +119,7 @@ if (apply) {
   await call('POST', '/integration_secrets', { identifier: SECRET_ID, type: 'bearer', token: '<redacted>' });
 }
 
-const mcpServerId = idOf(await findOrCreateMcpServer('receptionist-mcp', {
+const mcpServerId = await findOrCreateMcpServer('receptionist-mcp', {
   name: 'receptionist-mcp',
   type: MCP_TYPE,
   url: MCP_URL,
@@ -127,7 +127,7 @@ const mcpServerId = idOf(await findOrCreateMcpServer('receptionist-mcp', {
   // Keeping join_waitlist in the server-level allowlist too (Fix 3) — this is the resource Telnyx
   // gates tools/list against. update.mjs keeps it in sync post-create; setup just seeds it.
   allowed_tools: ['check_availability', 'book_appointment', 'cancel_or_reschedule_appointment', 'join_waitlist'],
-}));
+});
 
 const hangupToolId = await findOrCreateTool('hangup', HANGUP_TOOL_DISPLAY_NAME, {
   type: 'hangup',

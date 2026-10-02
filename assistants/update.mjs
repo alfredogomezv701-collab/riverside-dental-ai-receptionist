@@ -24,21 +24,19 @@ async function currentHangupToolId() {
 const hangupToolId = apply ? hangup ?? (await currentHangupToolId()) : '<hangup-tool-id>';
 
 async function currentAttemptCounterToolId() {
-  // Read the live Scheduling assistant and find the shared update_dynamic_variables tool attached
-  // via tool_ids. We need to look up each id in /ai/tools until we find one whose type is
-  // update_dynamic_variables. (The assistant's tool_ids alone doesn't carry the type, so a small
-  // follow-up fetch is required.)
+  // Read the live Scheduling assistant and find the shared update_dynamic_variables tool. NOTE:
+  // despite POST accepting `tool_ids` (an array of bare id strings) to attach a shared tool, GET
+  // does NOT echo that field back — it returns the fully resolved `tools` array instead (each
+  // entry already carrying `type` and `tool_id`, no follow-up /ai/tools fetch needed). Confirmed
+  // empirically: a live assistant with a tool attached via `tool_ids` shows `tool_ids: undefined`
+  // and the attached tool under `tools` on GET. Mirror currentHangupToolId's read-the-live-resource
+  // pattern, just against the field this API actually returns.
   const a = await fetch(`https://api.telnyx.com/v2/ai/assistants/${ids.scheduling}`, {
     headers: { authorization: `Bearer ${process.env.TELNYX_API_KEY}` },
   }).then((r) => r.json());
-  const theIds = (a.data ?? a).tool_ids ?? [];
-  for (const tid of theIds) {
-    const t = await fetch(`https://api.telnyx.com/v2/ai/tools/${tid}`, {
-      headers: { authorization: `Bearer ${process.env.TELNYX_API_KEY}` },
-    }).then((r) => r.json());
-    if ((t.data ?? t).type === 'update_dynamic_variables') return tid;
-  }
-  throw new Error('No update_dynamic_variables tool attached to Scheduling. Run setup.mjs --apply, or set ATTEMPT_COUNTER_TOOL_ID.');
+  const tool = ((a.data ?? a).tools ?? []).find((t) => t.type === 'update_dynamic_variables');
+  if (!tool) throw new Error('No update_dynamic_variables tool attached to Scheduling. Run setup.mjs --apply, or set ATTEMPT_COUNTER_TOOL_ID.');
+  return tool.tool_id;
 }
 const attemptCounterToolId = apply ? attemptCounter ?? (await currentAttemptCounterToolId()) : '<attempt-counter-tool-id>';
 const schedulingCommon = { webhookUrl: WEBHOOK_URL, hangupToolId, mcpServerId: ids.mcpServer, attemptCounterToolId, frontDeskId: ids.frontDesk, schedulingId: ids.scheduling, billingId: ids.billing };
@@ -83,7 +81,11 @@ if (apply) {
       headers: { authorization: `Bearer ${process.env.TELNYX_API_KEY}` },
     });
     if (!getRes.ok) throw new Error(`get mcp_server ${ids.mcpServer} -> ${getRes.status}: ${(await getRes.text()).slice(0, 600)}`);
-    const liveServer = (await getRes.json()).data;
+    // Unlike /ai/assistants/{id}, this single-resource GET does NOT wrap the result in `.data` —
+    // confirmed empirically (a real API inconsistency, see docs/LEARNINGS.md). Defensive fallback
+    // matches the `.data ?? ...` pattern already used everywhere else in this codebase.
+    const getJson = await getRes.json();
+    const liveServer = getJson.data ?? getJson;
     const putRes = await fetch(`https://api.telnyx.com/v2/ai/mcp_servers/${ids.mcpServer}`, {
       method: 'PUT',
       headers: { authorization: `Bearer ${process.env.TELNYX_API_KEY}`, 'content-type': 'application/json' },

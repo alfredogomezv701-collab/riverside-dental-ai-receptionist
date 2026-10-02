@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { KvNamespace } from '@telnyx/edge-runtime';
 import { dateProblem, findConflict, KNOWN_SERVICES, loadDayBookings, slotGrid, SERVICE_DURATION_MINUTES } from '../calendar.js';
-import { logToolCall } from '../log.js';
+import { logToolCall, type ReportExtra } from '../log.js';
 import {
   CHECK_AVAILABILITY_TOOL_NAME,
   CHECK_AVAILABILITY_TOOL_DESCRIPTION,
@@ -79,6 +79,7 @@ export function paginateSlots(
 export async function runCheckAvailability(
   input: CheckAvailabilityInput,
   ctx: ToolContext,
+  report?: ReportExtra,
 ): Promise<CheckAvailabilityResult> {
   if (!SERVICE_DURATION_MINUTES[input.service]) {
     return { service: input.service, date: input.date, slots: [], total_available: 0, note: `unknown service; use one of: ${KNOWN_SERVICES.join(', ')}` };
@@ -86,7 +87,12 @@ export async function runCheckAvailability(
   const bad = dateProblem(input.date, ctx.today);
   if (bad) return { service: input.service, date: input.date, slots: [], total_available: 0, note: bad };
 
+  // Timed and counted separately from the rest of the function so a slow call can be attributed to
+  // this specific KV work (one `list` plus one `get` per booking found) rather than lumped into the
+  // tool's total latency_ms — see docs/LEARNINGS.md, the check_availability latency investigation.
+  const lookupStart = Date.now();
   const booked = ctx.kv ? await loadDayBookings(ctx.kv, input.date) : [];
+  report?.({ kv_reads: ctx.kv ? 1 + booked.length : 0, lookup_ms: Date.now() - lookupStart });
   const all = slotGrid(input.service, input.date).map((s) => ({
     ...s,
     available: s.available && !findConflict({ service: input.service, start: s.start }, booked),
@@ -107,8 +113,8 @@ export function registerCheckAvailability(server: McpServer, ctx: ToolContext): 
       inputSchema: checkAvailabilityInputSchema.shape,
     },
     async (input: CheckAvailabilityInput) => {
-      const result = await logToolCall(CHECK_AVAILABILITY_TOOL_NAME, ctx.requestId, { service: input.service, date: input.date, cursor: input.cursor, limit: input.limit ?? DEFAULT_PAGE_SIZE }, () =>
-        runCheckAvailability(input, ctx),
+      const result = await logToolCall(CHECK_AVAILABILITY_TOOL_NAME, ctx.requestId, { service: input.service, date: input.date, cursor: input.cursor, limit: input.limit ?? DEFAULT_PAGE_SIZE }, (report) =>
+        runCheckAvailability(input, ctx, report),
       );
       return {
         content: [
