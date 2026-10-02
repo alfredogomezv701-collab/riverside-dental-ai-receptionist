@@ -238,16 +238,16 @@ Claude Code instead of trusting Kimi's own review output, which was also a reaso
 given credits were already tight at that point.
 
 **Back to GLM-5.2** — once the promo code came through and the pressure to economize on model choice
-eased, I went back to GLM. The second impression was considerably better than the first: faster,
-better at actually running/producing correct code, and — the most noticeable difference day to day —
-it seemed to need to read fewer files before it started working, which in practice meant its context
-filled up much more slowly. I restart a session once it's used something like 40-50% of context to
-keep costs down, and Kimi hit that threshold noticeably faster than GLM does, meaning more
-session-restarts (and more re-establishing context) with Kimi for comparable work. I'll caveat that
-this might partly be a read on *my own* prompting getting better over the day rather than a pure
-model difference, and GLM's code reviews surfacing fewer issues than Kimi's is confounded the same
-way — by the time GLM was reviewing, the codebase was already in better shape from earlier fixes, so
-it's not a clean apples-to-apples comparison of review quality.
+eased, I went back to GLM. The second impression was considerably better than the first: faster, and
+better at actually running/producing correct code. On context: the two read roughly the same number
+of files for comparable work, but GLM simply has a much larger context window, so it takes longer to
+fill up and I restart/summarize sessions less often with it. That's a real trade-off, not a pure win —
+a bigger window sitting fuller for longer can make an individual GLM session more expensive than it
+looks, and GLM being faster end-to-end is what actually offsets that, not the window size itself. I
+still restart/summarize early as a matter of habit regardless of model, since it's cheap insurance
+either way. I'll also caveat that GLM's code reviews surfacing fewer issues than Kimi's is confounded
+by timing — by the time GLM was reviewing, the codebase was already in better shape from earlier
+fixes, so it's not a clean apples-to-apples comparison of review quality.
 
 The early "asks for confirmation on everything" behavior from the first GLM session didn't recur in
 later ones — unclear whether that's because I got more explicit in how I prompt it, or whether the
