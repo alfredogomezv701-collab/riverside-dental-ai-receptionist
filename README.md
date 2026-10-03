@@ -195,9 +195,12 @@ exposed the latency bug below), plus the per-tool `outcome` field, which groups 
    one `request_id` through MCP -> webhook -> actor.
 3. **Live call, returning caller** (1 min): same number, greeted by name with the appointment (dynamic variables +
    variable-comparison edge).
-4. **Race and fallback** (1 min): a second call for the same slot gets the fresh-availability fallback; show the actor's
-   `already_booked` in the logs. Flip `flag/waitlist_mode` in KV with
-   `telnyx-edge storage kv key put <ns> flag/waitlist_mode on` and show the deterministic waitlist path with no redeploy.
+4. **Race and fallback** (1 min, one phone): right before calling, run `node scripts/book-test-slot.mjs <date> <start>` to
+   book that slot under a decoy patient directly through MCP (no second phone, no inference cost). Then call and ask for
+   that same slot live: the assistant hits `slot_already_booked` and falls back to fresh availability on the call; show
+   the actor's `already_booked` in the logs. Flip `flag/waitlist_mode` in KV with
+   `telnyx-edge storage kv key put <ns> flag/waitlist_mode on` and show the deterministic waitlist path with no redeploy,
+   same call. Cancel the decoy appointment afterward (the script prints the exact command).
 5. **Observability + one bug** (2 min): pick bug 4 (latency): the log line, the change, the before/after numbers.
 6. **Tests** (1 min): `npm run test:live`, especially the no-LLM end-to-end backend test.
 
