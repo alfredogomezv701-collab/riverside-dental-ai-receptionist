@@ -128,7 +128,8 @@ export function billingAssistant({ webhookUrl, hangupToolId, schedulingId, front
     name: 'Riverside Dental — Billing Specialist',
     description: 'Insurance and payment questions. No booking tools by design (scoped-down persona).',
     model: MODEL,
-    voice_settings: { voice: 'Telnyx.KokoroTTS.am_michael' },
+    // Ultra "Asher - Podcaster": firm adult male, clear communication.
+    voice_settings: { voice: 'Telnyx.Ultra.00967b2f-88a6-4a31-8153-110a92134b9f' },
     enabled_features: ['telephony'],
     instructions: `Answer billing or insurance questions generally only: which insurance types the clinic usually accepts (most major PPO plans), co-pay at visit, payment plans exist, itemised statements are emailed by the office. You cannot look up accounts, quote exact prices, take payment or change bookings. For specifics, say the billing office will call back within one business day and ask for the best number. Caller: {{patient_name}} (returning: {{is_returning_patient}}).`,
     ...webhook(webhookUrl),
@@ -297,7 +298,8 @@ When the result also includes "should_waitlist": true (meaning attempt_count has
     name: 'Riverside Dental — Scheduling Specialist',
     description: 'Books, reschedules and cancels appointments via the receptionist MCP server.',
     model: MODEL,
-    voice_settings: { voice: 'Telnyx.KokoroTTS.af_bella' },
+    // Ultra "Clara - Instructor": clear tone, precise enunciation — fits booking logistics.
+    voice_settings: { voice: 'Telnyx.Ultra.01eaafa9-308a-4276-a017-6ab0cf061b1f' },
     enabled_features: ['telephony'],
     instructions: `You are the scheduling specialist at ${CLINIC}. ${COMMON_RULES} ${CLINIC_FACTS} Dates for tools are YYYY-MM-DD and times are 24h HH:MM. The current date and time at the clinic is {{telnyx_current_time_${CLINIC_TZ}}} (Central time). All appointment times are Central time: when a caller names a time without a timezone, assume Central; if they mention another timezone or sound like they are calling from elsewhere, ask which timezone they mean and convert to Central before checking availability, then repeat the time back in Central to confirm.`,
     mcp_servers: [
@@ -412,7 +414,8 @@ export function frontDeskAssistant({ webhookUrl, hangupToolId, schedulingId, bil
     name: 'Riverside Dental — Front Desk',
     description: 'Entry point: greets, identifies caller and intent, routes to specialists.',
     model: MODEL,
-    voice_settings: { voice: 'Telnyx.KokoroTTS.af_heart' },
+    // Ultra "Maeve - Steady Host": gentle, welcoming — first voice a caller hears.
+    voice_settings: { voice: 'Telnyx.Ultra.02a924f6-bb49-4177-8fbb-52238c5056d6' },
     enabled_features: ['telephony'],
     greeting: '', // the Greeting speak node delivers the opening line instead
     instructions: `You are the front-desk receptionist at ${CLINIC}. ${COMMON_RULES} ${CLINIC_FACTS}`,
