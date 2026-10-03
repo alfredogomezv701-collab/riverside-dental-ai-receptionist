@@ -112,6 +112,10 @@ ignores the token; harmless (nobody is calling yet), but do the ships back to ba
 - [ ] Fill the README's `TODO` placeholder for the phone number
 - [ ] Ada Lovelace's record (`+15551234567`, 2026-10-07 10:00, older record shape) is kept as returning-caller demo data. It will be in
       the past by demo day, so `next_appointment` will be empty; book a fresh demo appointment instead
+- [ ] **Right before dialing, warm the webhook:** `node scripts/warm-webhook.mjs` (needs `WEBHOOK_TOKEN`). The measured latency is the
+      KV round-trip itself, not container cold-start (back-to-back runs: 3080ms, then 2518ms — barely moves), so this mostly just
+      moves that ~2.5-3s hit to before the call instead of eating it live. Hitting `/health` instead would NOT help: that handler
+      never touches KV.
 
 ## Not built (decide: build or explain)
 
