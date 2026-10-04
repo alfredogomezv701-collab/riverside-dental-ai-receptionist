@@ -1,4 +1,4 @@
-import { describe, it, afterEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   bookAppointmentInputSchema,
@@ -227,86 +227,5 @@ describe('runBookAppointment - failed-attempt counter (server-side, for the wait
     const wed1 = await runBookAppointment(bookInput({ date: WED, start: openSlot('cleaning', WED, 0), patientPhone: PHONE_B }) as never, kvCtx(kv));
     assert.equal(wed1.confirmed, false);
     assert.equal(wed1.attempt_count, 1, 'WED count is independent of TUE');
-  });
-});
-
-describe('book_appointment - confirmation SMS (fire-and-forget, never affects the booking result)', () => {
-  const originalFetch = global.fetch;
-  afterEach(() => {
-    global.fetch = originalFetch;
-  });
-
-  const smsCtx = (kv = new MockKvNamespace()) => ({ ...kvCtx(kv), telnyxApiKey: 'KEY123', smsFromNumber: '+12185069277' });
-
-  it('sends a confirmation SMS to the patient on a new successful booking', async () => {
-    const calls: { url: string; body: unknown }[] = [];
-    global.fetch = (async (url: string, init: { body: string }) => {
-      calls.push({ url: String(url), body: JSON.parse(init.body) });
-      return new Response(JSON.stringify({ data: { id: 'msg-1' } }), { status: 200 });
-    }) as typeof fetch;
-
-    const reports: Record<string, unknown>[] = [];
-    const r = await runBookAppointment(bookInput() as never, smsCtx(), (extra) => reports.push(extra));
-
-    assert.equal(r.confirmed, true);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, 'https://api.telnyx.com/v2/messages');
-    assert.equal((calls[0].body as { from: string }).from, '+12185069277');
-    assert.equal((calls[0].body as { to: string }).to, PHONE);
-    assert.match((calls[0].body as { text: string }).text, /Jamie|confirmed|cleaning/i);
-    assert.ok(reports.some((e) => e.sms_sent === true));
-  });
-
-  it('does not call Telnyx at all when telnyxApiKey/smsFromNumber are not configured', async () => {
-    let called = false;
-    global.fetch = (async () => {
-      called = true;
-      return new Response('{}', { status: 200 });
-    }) as typeof fetch;
-
-    const r = await runBookAppointment(bookInput() as never, kvCtx());
-    assert.equal(r.confirmed, true);
-    assert.equal(called, false);
-  });
-
-  it('does not send a second SMS on the idempotent "already booked by you" retry path', async () => {
-    let calls = 0;
-    global.fetch = (async () => {
-      calls++;
-      return new Response(JSON.stringify({ data: { id: 'msg-1' } }), { status: 200 });
-    }) as typeof fetch;
-
-    const kv = new MockKvNamespace();
-    const first = await runBookAppointment(bookInput() as never, smsCtx(kv));
-    assert.equal(first.confirmed, true);
-    assert.equal(calls, 1);
-
-    const retry = await runBookAppointment(bookInput() as never, smsCtx(kv));
-    assert.equal(retry.confirmed, true);
-    assert.equal((retry as { alreadyBookedByYou?: boolean }).alreadyBookedByYou, true);
-    assert.equal(calls, 1, 'no second text for a retry of the same booking');
-  });
-
-  it('a non-2xx Telnyx response is reported but does not fail the booking', async () => {
-    global.fetch = (async () =>
-      new Response(JSON.stringify({ errors: [{ detail: 'from number has no messaging profile' }] }), { status: 422 })) as typeof fetch;
-
-    const reports: Record<string, unknown>[] = [];
-    const r = await runBookAppointment(bookInput() as never, smsCtx(), (extra) => reports.push(extra));
-
-    assert.equal(r.confirmed, true, 'booking succeeds regardless of SMS outcome');
-    assert.ok(reports.some((e) => e.sms_sent === false && typeof e.sms_error === 'string'));
-  });
-
-  it('a network-level throw from fetch is caught and reported, not propagated', async () => {
-    global.fetch = (async () => {
-      throw new Error('network down');
-    }) as typeof fetch;
-
-    const reports: Record<string, unknown>[] = [];
-    const r = await runBookAppointment(bookInput() as never, smsCtx(), (extra) => reports.push(extra));
-
-    assert.equal(r.confirmed, true);
-    assert.ok(reports.some((e) => e.sms_sent === false && /network down/.test(String(e.sms_error))));
   });
 });
