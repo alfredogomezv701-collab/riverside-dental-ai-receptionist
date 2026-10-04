@@ -3,14 +3,15 @@
 // docs/LEARNINGS.md, the D61 finding). This fakes the "someone else booked it first" side of the
 // race with a free, no-inference direct MCP call, so the whole demo runs off one phone.
 //
-// Booking (the default) clears BOTH phones' reservations first, then books the decoy slot - so
-// one command before Call 3 does triple duty: cleans up the previous rehearsal's decoy, resets
-// the REAL demo number back to "new caller" for the next full run-through (Call 1 of the demo
-// script books a real appointment on it, which must be gone before Call 1 runs again), and sets
-// up this run's race. `--reset` is also available standalone for ad-hoc cleanup.
+// Booking (the default, no args needed) clears BOTH phones' reservations first, then books the
+// decoy slot - so the SAME no-params command runs twice in the demo: once before Call 1 (clean
+// slate) and once before Call 3 (clears whatever Call 1/2 left behind, then sets up the race) -
+// always the same Thursday 9am slot, so you always know what to say on the call without checking
+// anything. `--reset` is also available standalone for ad-hoc cleanup of one number.
 //
 //   from repo root:  set -a; . .env; . .env.local; set +a
-//   node scripts/book-test-slot.mjs <date YYYY-MM-DD> <start HH:MM> [service]   # reset both phones, then book the decoy slot
+//   node scripts/book-test-slot.mjs                                            # reset both phones, book next Thursday 9am
+//   node scripts/book-test-slot.mjs <date YYYY-MM-DD> <start HH:MM> [service]  # same, but a specific slot instead of the default
 //   node scripts/book-test-slot.mjs --reset <phone>                            # cancel everything on file for one number, nothing else
 //
 // Booking prints the appointmentId - cancel it with --reset if you don't do it live on the call.
@@ -18,6 +19,16 @@ import { MCP_URL, webhookUrl } from '../assistants/config.mjs';
 
 const DEMO_PHONE = '+10005550100';
 const DECOY_PHONE = '+15555550199';
+const CLINIC_TZ = 'America/Chicago';
+
+/** The next Thursday (clinic-local), today included, as YYYY-MM-DD. */
+function nextThursday() {
+  const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: CLINIC_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const [y, m, d] = todayStr.split('-').map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  while (probe.getUTCDay() !== 4) probe.setUTCDate(probe.getUTCDate() + 1); // 4 = Thursday
+  return probe.toISOString().slice(0, 10);
+}
 
 const MCP_SECRET = process.env.MCP_SHARED_SECRET;
 if (!MCP_SECRET) {
@@ -92,12 +103,13 @@ if (args[0] === '--reset') {
   await reset(phone);
 } else {
   const [date, start, service = 'cleaning'] = args;
-  if (!date || !start) {
+  if (args.length > 0 && !(date && start)) {
     console.error(
-      'Usage: node scripts/book-test-slot.mjs <date YYYY-MM-DD> <start HH:MM> [service]\n' +
+      'Usage: node scripts/book-test-slot.mjs                                           (defaults: next Thursday, 9am)\n' +
+        '   or: node scripts/book-test-slot.mjs <date YYYY-MM-DD> <start HH:MM> [service]\n' +
         '   or: node scripts/book-test-slot.mjs --reset <phone>',
     );
     process.exit(1);
   }
-  await book(date, start, service);
+  await book(date ?? nextThursday(), start ?? '09:00', service);
 }
