@@ -149,6 +149,17 @@ export function schedulingAssistant({ webhookUrl, mcpServerId, hangupToolId, att
       instructions: `Find out what the caller needs: a new appointment, or to change or cancel an existing one. For a new appointment collect the service and a preferred date. If {{is_returning_patient}} is "true", greet {{patient_name}} by name; they have {{appointment_count}} upcoming appointment(s), the soonest being "{{next_appointment}}" unless that is empty or "none".`,
     },
     {
+      type: 'speak',
+      id: 'n_checking',
+      name: 'Checking (filler)',
+      // A fixed speak node needs no LLM generation, so it plays immediately regardless of how long
+      // the model takes on the NEXT turn (n_offer: classify + call check_availability + word the
+      // result - two model round trips stacked on one user turn, measured at ~6s+ live). Without
+      // this, that gap is dead air; a caller who hears nothing hangs up (reproduced live 2026-10-04,
+      // call ended by recv_bye ~12s after the caller gave a date, before the tool was even called).
+      message: `Let me check what's available for that.`,
+    },
+    {
       type: 'prompt',
       id: 'n_offer',
       name: 'Check Availability',
@@ -236,8 +247,9 @@ When the result also includes "should_waitlist": true (meaning attempt_count has
     ...['n_collect', 'n_offer', 'n_confirm', 'n_book', 'n_manage', 'n_waitlist_join'].map((n) =>
       edge(`e_${n.slice(2)}_slow`, n, toNode('n_escalate'), durationOver(ESCALATION_SECS))),
 
-    edge('e_collect_offer', 'n_collect', toNode('n_offer'),
+    edge('e_collect_offer', 'n_collect', toNode('n_checking'),
       llm('The caller wants a new appointment and has given the service and a preferred date.')),
+    edge('e_checking_offer', 'n_checking', toNode('n_offer'), dflt),
     edge('e_collect_manage', 'n_collect', toNode('n_manage'),
       llm('The caller wants to cancel or reschedule an existing appointment.')),
     edge('e_collect_desk', 'n_collect', toAssistant(frontDeskId, 'unified'),
@@ -301,7 +313,7 @@ When the result also includes "should_waitlist": true (meaning attempt_count has
     // Ultra "Clara - Instructor": clear tone, precise enunciation — fits booking logistics.
     voice_settings: { voice: 'Telnyx.Ultra.01eaafa9-308a-4276-a017-6ab0cf061b1f' },
     enabled_features: ['telephony'],
-    instructions: `You are the scheduling specialist at ${CLINIC}. ${COMMON_RULES} ${CLINIC_FACTS} Dates for tools are YYYY-MM-DD and times are 24h HH:MM. The current date and time at the clinic is {{telnyx_current_time_${CLINIC_TZ}}} (Central time). All appointment times are Central time: when a caller names a time without a timezone, assume Central; if they mention another timezone or sound like they are calling from elsewhere, ask which timezone they mean and convert to Central before checking availability, then repeat the time back in Central to confirm.`,
+    instructions: `You are the scheduling specialist at ${CLINIC}. ${COMMON_RULES} ${CLINIC_FACTS} Dates for tools are YYYY-MM-DD and times are 24h HH:MM. The current date and time at the clinic is {{telnyx_current_time_${CLINIC_TZ}}} (Central time). All appointment times are Central time: when a caller names a time without a timezone, assume Central; if they mention another timezone or sound like they are calling from elsewhere, ask which timezone they mean and convert to Central before checking availability, then repeat the time back in Central to confirm. Before calling check_availability, book_appointment, cancel_or_reschedule_appointment or join_waitlist, ALWAYS say a short line out loud first confirming what you understood (e.g. "Let me check Monday the twelfth for you" or "Booking that cleaning now") - never go straight from the caller's answer into a silent tool call, even if you are confident; the caller must hear something immediately, every time, not only when you are unsure.`,
     mcp_servers: [
       {
         id: mcpServerId,
