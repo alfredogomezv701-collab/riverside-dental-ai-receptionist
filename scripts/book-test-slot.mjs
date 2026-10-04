@@ -9,13 +9,33 @@
 // always the same Thursday 9am slot, so you always know what to say on the call without checking
 // anything. `--reset` is also available standalone for ad-hoc cleanup of one number.
 //
-//   from repo root:  set -a; . .env; . .env.local; set +a
+//   from repo root:
 //   node scripts/book-test-slot.mjs                                            # reset both phones, book next Thursday 9am
 //   node scripts/book-test-slot.mjs <date YYYY-MM-DD> <start HH:MM> [service]  # same, but a specific slot instead of the default
 //   node scripts/book-test-slot.mjs --reset <phone>                            # cancel everything on file for one number, nothing else
 //
 // Booking prints the appointmentId - cancel it with --reset if you don't do it live on the call.
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { MCP_URL, webhookUrl } from '../assistants/config.mjs';
+
+// Load .env / .env.local ourselves (repo root, one level up from this file) instead of requiring
+// the caller's shell to source them - bash and PowerShell disagree on that syntax, and this way
+// neither matters. Never overrides a value already set in the environment; silently skips a
+// missing file (fine for CI or a shell that already exported everything).
+const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+for (const name of ['.env', '.env.local']) {
+  let text;
+  try {
+    text = readFileSync(`${repoRoot}${name}`, 'utf8');
+  } catch {
+    continue;
+  }
+  for (const line of text.split('\n')) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (match && !(match[1] in process.env)) process.env[match[1]] = match[2].trim();
+  }
+}
 
 const DEMO_PHONE = '+10005550100';
 const DECOY_PHONE = '+15555550199';
