@@ -3,16 +3,21 @@
 // docs/LEARNINGS.md, the D61 finding). This fakes the "someone else booked it first" side of the
 // race with a free, no-inference direct MCP call, so the whole demo runs off one phone.
 //
-// Also doubles as the between-rehearsals reset for the REAL demo number: Call 1 of the demo
-// script books a real appointment on it, and leaving that in place turns Call 1's "new caller"
-// moment into a returning-caller one on the next run-through. `--reset` clears it.
+// Booking (the default) clears BOTH phones' reservations first, then books the decoy slot - so
+// one command before Call 3 does triple duty: cleans up the previous rehearsal's decoy, resets
+// the REAL demo number back to "new caller" for the next full run-through (Call 1 of the demo
+// script books a real appointment on it, which must be gone before Call 1 runs again), and sets
+// up this run's race. `--reset` is also available standalone for ad-hoc cleanup.
 //
 //   from repo root:  set -a; . .env; . .env.local; set +a
-//   node scripts/book-test-slot.mjs <date YYYY-MM-DD> <start HH:MM> [service]   # book the decoy slot
-//   node scripts/book-test-slot.mjs --reset <phone, e.g. +10005550100>          # cancel everything on file for a number
+//   node scripts/book-test-slot.mjs <date YYYY-MM-DD> <start HH:MM> [service]   # reset both phones, then book the decoy slot
+//   node scripts/book-test-slot.mjs --reset <phone>                            # cancel everything on file for one number, nothing else
 //
 // Booking prints the appointmentId - cancel it with --reset if you don't do it live on the call.
 import { MCP_URL, webhookUrl } from '../assistants/config.mjs';
+
+const DEMO_PHONE = '+10005550100';
+const DECOY_PHONE = '+15555550199';
 
 const MCP_SECRET = process.env.MCP_SHARED_SECRET;
 if (!MCP_SECRET) {
@@ -58,12 +63,15 @@ async function reset(phone) {
 }
 
 async function book(date, start, service) {
+  await reset(DEMO_PHONE);
+  await reset(DECOY_PHONE);
+
   const result = await mcp('book_appointment', {
     service,
     date,
     start,
     patientName: 'Demo Decoy',
-    patientPhone: '+15555550199',
+    patientPhone: DECOY_PHONE,
   });
   if (!result.confirmed) {
     console.error('Pre-book failed - pick a different slot:', result);
@@ -71,7 +79,7 @@ async function book(date, start, service) {
   }
   console.log(`Booked ${date} ${start} under the decoy patient. appointmentId: ${result.appointment.appointmentId}`);
   console.log('Now call and ask for this exact slot - expect slot_already_booked + fresh-availability fallback.');
-  console.log(`Cancel afterward: node scripts/book-test-slot.mjs --reset +15555550199`);
+  console.log(`Cancel afterward: node scripts/book-test-slot.mjs --reset ${DECOY_PHONE}`);
 }
 
 const args = process.argv.slice(2);
