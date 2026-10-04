@@ -200,12 +200,6 @@ MCP tools can't be scoped per node (only shared tools can), so scoping is per as
 are real; KV is the system of record. `patient/{phone10}` is a non-atomic read-modify-write. Chat and voice differ (webhook per
 turn vs per call). The clinic time zone is fixed. Full list in the README.
 
-**Booking-confirmation SMS does not actually reach a phone** on this account: the clinic's longcode number has no 10DLC
-campaign registered (`GET /v2/10dlc/brand` → zero records), so US carriers silently filter the A2P traffic one hop past
-Telnyx's API, which still reports `sent: true`. The code path, fire-and-forget behavior, and error handling are implemented
-and fully tested (142/142, including the SMS cases); only live carrier delivery is blocked, and fixing that means
-registering a 10DLC brand/campaign (business verification, carrier review takes hours-to-days) — outside a challenge
-timeline. Detail in `docs/LEARNINGS.md`.
 
 ## Edge-case routing audit (prompt nodes without fallback edges)
 
