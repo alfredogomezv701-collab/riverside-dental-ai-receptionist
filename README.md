@@ -40,8 +40,9 @@ exercised with a bare `curl`; to try the system, call the number or run the test
  Scheduling Specialist   Billing Specialist                                            | HTTP + x-request-id
    Collect -> Check Availability -> Confirm -> Book                       receptionist-mcp (Express + MCP SDK)
    + Change/Cancel branch, Waitlist, Escalate      ---- MCP tools ---->     check_availability
-   (3 MCP tools attached here only)                                         book_appointment
+   (4 MCP tools attached here only)                                         book_appointment
                                                                             cancel_or_reschedule_appointment
+                                                                            join_waitlist
 ```
 
 ### Which primitive for which job
@@ -67,7 +68,7 @@ rejected alternative are in `docs/ARCHITECTURE.md`.
   (`is_returning_patient == "true"`), the KV `waitlist_mode` flag, and the 300-second time box on every
   conversational node. **LLM edges** only for real intent decisions.
 - **Tool scoping:** workflow nodes can only take *shared* tools, not MCP tools, so scoping is per assistant:
-  Scheduling has the three MCP tools; Front Desk and Billing have none.
+  Scheduling has the four MCP tools; Front Desk and Billing have none.
 - Confirm always precedes Book (no edge reaches Book from anywhere else); a lost slot race loops back to fresh
   availability; the waitlist edge applies only to the new-booking path so nobody calling to *cancel* is turned away.
 
@@ -178,13 +179,9 @@ exposed the latency bug below), plus the per-tool `outcome` field, which groups 
   rather than per turn) is on the manual checklist in `docs/TODO.md`.
 - The calendar is a deterministic mock (`slotGrid`, with some slots marked busy); real bookings are real. Appointments live
   in KV with no database behind them.
-- The actor keys holds by exact start time. Overlap between different-length appointments is enforced in the MCP layer
-  from the KV bookings (check-then-act), not atomically in the actor.
 - The patient record is a read-modify-write on one key: two simultaneous bookings for the *same phone* could lose an update.
-- The dynamic-variables webhook is protected by a URL token; verifying Telnyx's own webhook signature is a further hardening step.
 - The clinic time zone is fixed to America/Chicago; whether the `telnyx_current_time_America/Chicago` variable renders on a live
   call is still to be confirmed.
-- No waitlist is persisted; the waitlist message says so.
 
 ## Demo script (about 10 minutes)
 

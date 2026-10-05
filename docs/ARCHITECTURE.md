@@ -109,14 +109,12 @@ Reschedule/cancel follow the same shape, calling `cancel_or_reschedule_appointme
 This is the one true single-threaded read-modify-write requirement in the system: without
 it, two simultaneous callers could both read "2pm available" and both book it.
 
-**Known limitation, flagged for Q&A rather than hidden**: the conflict key is
-`slot:{start}` — exact start time only, no duration, so the actor alone would let a
-90-minute root canal at 09:00 and a 30-minute cleaning at 09:30 coexist. The MCP layer closes that
-gap without changing the actor: `book_appointment` and reschedule list the day's bookings and reject
-any that overlap in real time (`findConflict`). That check is check-then-act, not atomic, so two
-simultaneous *overlapping-but-not-identical* bookings could still both pass; identical starts are
-still race-safe in the actor. The complete fix would be to hold every 30-minute quantum an
-appointment occupies inside the actor, in one atomic call.
+**Resolved — was a known limitation, flagged for Q&A, now fixed**: `holdSlot` originally keyed on exact
+start time only, so a 90-minute root canal at 09:00 and a 30-minute cleaning at 09:30 could have
+coexisted (overlap enforced only check-then-act, in the MCP layer, not atomically). `holdSlot` now takes
+a `durationMinutes` and atomically holds every 30-minute quantum the appointment occupies
+(`quantumStarts`), so an overlapping-but-not-identical booking is rejected by the actor itself, not just
+the MCP-layer check. Tested with the exact 90-min/30-min overlap scenario described above.
 
 **Shared access**: a separate reminder function (invoked on a schedule, or chained from
 the actor's own alarm mechanism) reads the same `DaySlotActor` to identify tomorrow's
@@ -296,8 +294,9 @@ timeout look like a new caller).
 
 **It is not public.** It returns a person's name and appointment id for whatever number it is asked
 about, so the assistants are configured with `.../?token=<WEBHOOK_TOKEN>` and the route compares it
-in constant time, failing closed if the secret was never created. Verifying Telnyx's own webhook
-signature is a further hardening step, not done.
+in constant time, failing closed if the secret was never created. Telnyx's own webhook signature
+(Ed25519, via WebCrypto) is also verified, checked before the URL token, failing closed on a
+missing/malformed signature, stale timestamp, or tampered body (`src/verify_webhook.ts`).
 
 These feed a personalised greeting, and a deterministic edge (`is_returning_patient == "true"`) sends
 a returning caller to a different intent node than a new one.
