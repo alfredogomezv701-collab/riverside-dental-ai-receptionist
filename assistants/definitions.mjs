@@ -146,7 +146,7 @@ export function schedulingAssistant({ webhookUrl, mcpServerId, hangupToolId, att
       id: 'n_collect',
       name: 'Collect Details',
       instructions_mode: 'append',
-      instructions: `Find out what the caller needs: a new appointment, or to change or cancel an existing one. For a new appointment collect the service and a preferred date. If {{is_returning_patient}} is "true", greet {{patient_name}} by name; they have {{appointment_count}} upcoming appointment(s), the soonest being "{{next_appointment}}" unless that is empty or "none".`,
+      instructions: `Find out what the caller needs: a new appointment, or to change or cancel an existing one. For a new appointment collect the service and a preferred date. The appointment may be for the caller themselves or for someone else, such as their child or another family member - this is common, not an edge case, so if it is unclear, just ask whose appointment it is. If {{is_returning_patient}} is "true", greet {{patient_name}} by name; they have {{appointment_count}} upcoming appointment(s), the soonest being "{{next_appointment}}" unless that is empty or "none".`,
     },
     {
       type: 'speak',
@@ -171,7 +171,7 @@ export function schedulingAssistant({ webhookUrl, mcpServerId, hangupToolId, att
       id: 'n_confirm',
       name: 'Confirm Details',
       instructions_mode: 'append',
-      instructions: `Repeat back the service, date and time, and collect the patient's full name and a callback phone number with area code (ten digits). The number the caller is phoning from is {{telnyx_end_user_target}}: if they say "this number" or "the number I'm calling from", use exactly that; if it is empty or not a real number, ask them to say a number. Ask for a clear yes before booking. If the caller says "yes" or "that's right" or "correct" or similar affirmative words, even with extra chatter or clarifying questions, treat it as a yes.`,
+      instructions: `Repeat back the service, date and time, and collect the full name of whoever the appointment is for - the caller, or someone else such as their child - and a callback phone number with area code (ten digits). The callback number is normally the caller's own number even when the appointment is for someone else, since that is who the clinic will actually reach. The number the caller is phoning from is {{telnyx_end_user_target}}: if they say "this number" or "the number I'm calling from", use exactly that; if it is empty or not a real number, ask them to say a number. Ask for a clear yes before booking. If the caller says "yes" or "that's right" or "correct" or similar affirmative words, even with extra chatter or clarifying questions, treat it as a yes.`,
     },
     {
       type: 'prompt',
@@ -237,7 +237,7 @@ When the result also includes "should_waitlist": true (meaning attempt_count has
       // so this node collects name+phone, calls join_waitlist, and only reaches n_waitlist once
       // the tool returns queued:true. (The attempt_count path does the same call from n_book,
       // where name+phone are already known; this node handles the flag path that bypasses n_book.)
-      instructions: `The clinic is running in waitlist mode today: the caller cannot be booked right now, but their request can be queued for the team. You already have the service and the date the caller asked about. Collect the caller's full name and a callback phone number with area code (ten digits). The number the caller is phoning from is {{telnyx_end_user_target}}: if they say "this number" or "the number I'm calling from", use exactly that; if it is empty or not a real number, ask them to say a number. Then call the join_waitlist tool with the date, the service, the patient's name and the phone number. Only once join_waitlist returns "queued": true, tell the caller you've noted their request and the team will be in touch, and you are done. If join_waitlist returns "queued": false, apologise that you cannot take the request right now and offer to try again later — do NOT claim the request was noted when it was not.`,
+      instructions: `The clinic is running in waitlist mode today: the caller cannot be booked right now, but their request can be queued for the team. You already have the service and the date the caller asked about. Collect the full name of whoever the request is for - the caller, or someone else such as their child - and a callback phone number with area code (ten digits). The callback number is normally the caller's own number even when the request is for someone else. The number the caller is phoning from is {{telnyx_end_user_target}}: if they say "this number" or "the number I'm calling from", use exactly that; if it is empty or not a real number, ask them to say a number. Then call the join_waitlist tool with the date, the service, the patient's name and the phone number. Only once join_waitlist returns "queued": true, tell the caller you've noted their request and the team will be in touch, and you are done. If join_waitlist returns "queued": false, apologise that you cannot take the request right now and offer to try again later — do NOT claim the request was noted when it was not.`,
     },
     { type: 'tool', id: 'n_hangup', name: 'Hang up', shared_tool_id: hangupToolId },  // <-- ADD THIS TO NODES TOO!
   ];
