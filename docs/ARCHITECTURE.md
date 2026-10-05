@@ -31,6 +31,9 @@ tool list short (per the challenge's own guidance: fewer tools per node = more r
 tool selection), and this is the cleanest way to demonstrate real multi-assistant routing
 rather than just more nodes in one assistant.
 
+Each assistant also has its own `voice_settings` (Telnyx Ultra voices, one per persona), so a
+hand-off is audible as well as behavioral.
+
 ## Conversation Workflow
 
 ### Front Desk
@@ -52,17 +55,20 @@ Greeting (speak — clinic name + disclosure)
 ### Scheduling Specialist
 
 ```
-Collect Details (prompt: service type, preferred date/time)
+Collect Details (prompt: service type, preferred date/time; the appointment may be for the
+  caller or someone else, e.g. their child — explicitly handled, not assumed away)
+  → Checking (speak, fixed filler — see "Silent-stall mitigation" below)
   → Check Availability (MCP tool: check_availability; computed from real bookings, not cached)
-        └── waitlist_mode == "true" [variable comparison on the KV flag] → Waitlist (speak) → hang up
+        └── waitlist_mode == "true" [variable comparison on the KV flag] → Join Waitlist
             (new-booking path only: the same node also handles cancel/reschedule, which must never hit it)
   → Confirm (prompt: repeat back, get verbal yes)
       ├── Confirmed                              → Book (MCP tool: book_appointment)
       │                                              ├── success → Closing (speak)
       │                                              └── slot_already_booked / invalid_slot / slot_unavailable
-      │                                                    └── re-prompt with fresh availability
-      │                                                        (attempt_count >= 3 -> waitlist: not built)
+      │                                                    ├── attempt_count >= 3 → Join Waitlist
+      │                                                    └── else → re-prompt with fresh availability
       └── Not confirmed                          → back to Collect Details
+  Join Waitlist (prompt: collect name + callback number, call join_waitlist, only then → Waitlist speak node)
   Collect Details → Change/Cancel (MCP tool: cancel_or_reschedule_appointment) → Closing (change/cancel)
         └── failures (not found, new slot taken) → back to Check Availability / Collect Details
   Every conversational node: telnyx_conversation_duration_secs >= 300 → Escalate (speak)
@@ -191,6 +197,14 @@ live), so every key uses `/` and times drop the colon (`0900`).
   cancelling the last appointment deletes it. It is keyed on the last 10 digits, and a caller ID
   with fewer than 10 digits is never looked up (nor accepted at booking), so an anonymous or junk
   number can never collapse onto a shared key. Two older shapes are still read (one extra read).
+  **Third-party bookings** (a parent booking for their child, calling on behalf of someone else) need
+  no schema change: `patientName` is just a string, so it can name someone other than the caller, while
+  `patientPhone` — the record's key — stays the callback number the clinic will actually use, normally
+  the caller's own even when the appointment is for someone else. A phone can already hold several
+  named appointments (tested), which is exactly what one parent booking for multiple kids needs. Only
+  the prompts needed to stop assuming caller-equals-patient; found live when a third-party booking
+  attempt confused the model into fabricating an excuse and the call was terminated by Telnyx's own
+  call-control layer (`send_bye`), not a flow edge — see `docs/LEARNINGS.md`.
 - `booking/{date}/{HHMM}` → one record per booked slot; `check_availability` and the booking
   overlap check list the day's prefix to see what is taken.
 - `appointment/{id}` → the appointment record `cancel_or_reschedule_appointment` operates on.
@@ -216,7 +230,7 @@ is the actor's job.
 
 ## MCP server
 
-Three tools, each scoped to the node(s) that need it:
+Four tools, each scoped to the node(s) that need it:
 
 All three share one calendar module (`src/calendar.ts`) so what is *offered* and what is *accepted*
 cannot disagree: a known service, a real future weekday (clinic-local date), a start time on that
@@ -234,6 +248,36 @@ overlap with an existing booking of any length.
 3. `cancel_or_reschedule_appointment(appointmentId, action, ...)` — reschedule secures and confirms the
    *new* slot first, writes, and only then lets go of the old one (any failure leaves the original booking
    intact and gives the new slot back); cancel frees the slot then deletes the records (retry-safe).
+4. `join_waitlist(date, service, patientName, patientPhone)` — persists `waitlist/{date}/{phone10}` to KV.
+   See "Waitlist" below for the two paths that call it and why persistence happens before the spoken claim.
+
+## Waitlist
+
+Two independent paths reach the waitlist, and both persist a real record *before* the assistant tells
+the caller their request was noted — a waitlist message that says "I've noted your request" while
+nothing is stored would be a lie told to a real caller (an early version did exactly this; see
+`docs/LEARNINGS.md`, "Say what you store").
+
+1. **Organic (`attempt_count >= 3`)**: `book_appointment` increments a per-caller-per-date KV counter
+   every time it returns `slot_already_booked`, and returns that count in its result. The `n_book`
+   node's instructions direct the model to mirror it into a conversation variable via
+   `update_dynamic_variables` (the only platform mechanism for an LLM to write a variable mid-call — see
+   `docs/LEARNINGS.md` for how that was found) before replying, and a variable-comparison edge reads it.
+   The count itself is server-side authoritative; whether the *edge fires* is LLM-gated (the model has to
+   actually call the update tool) — the safe failure direction if it doesn't is more retries, not a
+   spurious waitlist.
+2. **Operator override (`flag/waitlist_mode`)**: a KV flag, toggled without a redeploy, that forces every
+   new-booking attempt straight to the waitlist regardless of real availability or attempt count — built
+   so a demo doesn't require actually failing to book three times live. **Important:** the flag is read
+   once, by the webhook, at call pickup, and baked into that call's `waitlist_mode` variable for the
+   call's entire duration — it is never re-read mid-call. Flipping it while a call is already in progress
+   has no effect on that call; it only affects a call that starts after the flip.
+
+Both paths land on `Join Waitlist` (`n_waitlist_join`), which collects a name and callback number — for
+whoever the appointment is for, not necessarily the caller (see "Third-party bookings" under KV) — calls
+`join_waitlist`, and only once it returns `queued: true` does the flow continue to the `Waitlist` speak
+node. `join_waitlist` returning `queued: false` (e.g. KV unavailable) is explicitly not a path into that
+speak node; the caller gets an apology and a callback offer instead, never a false claim.
 
 ## Dynamic Webhook Variables
 
@@ -281,6 +325,18 @@ All implemented; the runbook and the debugging stories are in the README.
 - **Signals beyond logs**: `latency_ms` / `lookup_ms` / `kv_reads` on the critical-path webhook (this is
   what exposed the 2.7 s latency bug), and the per-tool `outcome` field, which groups into an error rate.
   Not built: hold→confirm conversion counters from the actor's alarm sweep.
+
+**Silent-stall mitigation**: a live call went dead silent for 6+ seconds after the caller gave a date,
+then was hung up on (confirmed via the SIP record vs. the MCP log timestamp: the tool call fired one
+second *after* the call had already ended). The node graph wasn't the cause — MCP tools are
+assistant-wide, not node-scoped, so the model had handled the whole exchange from `Collect Details`
+without ever taking the edge into `Check Availability`. The actual fix was behavioral, not structural:
+Scheduling's instructions now require a short spoken line before every single tool call, every time
+("Let me check that for you") — turning an LLM habit that only showed up by accident (a transcription
+glitch once made the model double-check a date out loud) into a deterministic one, so the caller never
+sits in silence regardless of which path the model takes. The `Checking` filler speak node (fixed text,
+no LLM generation, plays near-instantly) is a backstop for the specific `Collect Details → Check
+Availability` edge, in case the model does take it.
 - **A synthetic monitor**: `npm run test:probe` in `assistants/` exercises the deployed functions and a
   full no-LLM booking round trip, and doubles as a "did the last deploy break anything" check.
 
