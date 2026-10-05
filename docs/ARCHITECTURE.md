@@ -230,12 +230,11 @@ is the actor's job.
 
 ## MCP server
 
-Four tools, each scoped to the node(s) that need it:
-
-All three share one calendar module (`src/calendar.ts`) so what is *offered* and what is *accepted*
-cannot disagree: a known service, a real future weekday (clinic-local date), a start time on that
-service's grid (back-to-back slots inside 09:00-17:00) that the mock backend doesn't mark busy, and no
-overlap with an existing booking of any length.
+Four tools, each scoped to the node(s) that need it. The first three share one calendar module
+(`src/calendar.ts`) so what is *offered* and what is *accepted* cannot disagree: a known service, a
+real future weekday (clinic-local date), a start time on that service's grid (back-to-back slots
+inside 09:00-17:00) that the mock backend doesn't mark busy, and no overlap with an existing booking
+of any length. `join_waitlist` needs no slot validation (it persists a request, not a booking).
 
 1. `check_availability(service, date)` — the service's grid minus everything already booked that day
    (including slots inside a longer appointment). Never cached.
@@ -325,6 +324,8 @@ All implemented; the runbook and the debugging stories are in the README.
 - **Signals beyond logs**: `latency_ms` / `lookup_ms` / `kv_reads` on the critical-path webhook (this is
   what exposed the 2.7 s latency bug), and the per-tool `outcome` field, which groups into an error rate.
   Not built: hold→confirm conversion counters from the actor's alarm sweep.
+- **A synthetic monitor**: `npm run test:probe` in `assistants/` exercises the deployed functions and a
+  full no-LLM booking round trip, and doubles as a "did the last deploy break anything" check.
 
 **Silent-stall mitigation**: a live call went dead silent for 6+ seconds after the caller gave a date,
 then was hung up on (confirmed via the SIP record vs. the MCP log timestamp: the tool call fired one
@@ -337,8 +338,6 @@ glitch once made the model double-check a date out loud) into a deterministic on
 sits in silence regardless of which path the model takes. The `Checking` filler speak node (fixed text,
 no LLM generation, plays near-instantly) is a backstop for the specific `Collect Details → Check
 Availability` edge, in case the model does take it.
-- **A synthetic monitor**: `npm run test:probe` in `assistants/` exercises the deployed functions and a
-  full no-LLM booking round trip, and doubles as a "did the last deploy break anything" check.
 
 ## Explicitly deferred / out of scope
 
