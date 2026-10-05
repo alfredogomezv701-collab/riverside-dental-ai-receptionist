@@ -41,7 +41,13 @@ for (const name of ['.env', '.env.local']) {
   }
 }
 
-const DEMO_PHONE = '+10005550100';
+// The real verified demo number - not hardcoded, so it's never committed to source. Set it in
+// .env.local (gitignored), same place as the other secrets this script already loads.
+const DEMO_PHONE = process.env.DEMO_PHONE;
+if (!DEMO_PHONE) {
+  console.error('Set DEMO_PHONE in .env.local first (the verified number you demo from).');
+  process.exit(1);
+}
 const DECOY_PHONE = '+15555550199';
 const CLINIC_TZ = 'America/Chicago';
 const KV_NAMESPACE = '3c826291-8337-4141-821c-080f0bb32c28';
