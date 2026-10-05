@@ -32,7 +32,11 @@ for (const name of ['.env', '.env.local']) {
     continue;
   }
   for (const line of text.split('\n')) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    // \r? before $: CRLF line endings (this repo's .env has them) otherwise make the whole line
+    // fail to match at all (`.` doesn't consume \r, and `$` without /m only matches true end of
+    // string or before a final \n) - not just leave a trailing \r on the value. Silently losing an
+    // entire var is worse than a stray \r, which is why this needs calling out, not just trimming.
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)\r?$/);
     if (match && !(match[1] in process.env)) process.env[match[1]] = match[2].trim();
   }
 }
@@ -40,6 +44,8 @@ for (const name of ['.env', '.env.local']) {
 const DEMO_PHONE = '+10005550100';
 const DECOY_PHONE = '+15555550199';
 const CLINIC_TZ = 'America/Chicago';
+const KV_NAMESPACE = '3c826291-8337-4141-821c-080f0bb32c28';
+const digitsOf = (phone) => phone.replace(/\D/g, '').slice(-10);
 
 /** The next Thursday (clinic-local), today included, as YYYY-MM-DD. */
 function nextThursday() {
@@ -82,6 +88,42 @@ async function nextAppointmentId(phone) {
   return dynamic_variables.next_appointment_id || undefined;
 }
 
+// Waitlist entries aren't reachable through the webhook/MCP (no "my waitlist entries" lookup
+// exists), via the same REST API `telnyx-edge storage kv` itself calls under the hood.
+async function listWaitlistKeys() {
+  const key = process.env.TELNYX_API_KEY;
+  if (!key) return [];
+  const res = await fetch(`https://api.telnyx.com/v2/storage/kvs/${KV_NAMESPACE}/keys?prefix=waitlist/&limit=1000`, {
+    headers: { authorization: `Bearer ${key}` },
+  });
+  if (!res.ok) return [];
+  const { data } = await res.json();
+  return data || [];
+}
+async function deleteWaitlistKeys(keys) {
+  const key = process.env.TELNYX_API_KEY;
+  for (const k of keys) {
+    await fetch(`https://api.telnyx.com/v2/storage/kvs/${KV_NAMESPACE}/keys/${k.key}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${key}` },
+    });
+  }
+  return keys.length;
+}
+// The key is waitlist/{date}/{phone10} - date-prefixed, so it can't be constructed without
+// knowing the date. Used by the standalone --reset <phone>, scoped to that one number.
+async function clearWaitlist(phone) {
+  const suffix = `/${digitsOf(phone)}`;
+  return deleteWaitlistKeys((await listWaitlistKeys()).filter((k) => k.key.endsWith(suffix)));
+}
+// Used by the default book() reset: third-party bookings (booking for a brother, a kid, etc.) land
+// under whatever phone number the caller gave mid-call, not a demo/decoy number anyone can list in
+// advance - so the default reset wipes every waitlist entry, not just the two known numbers'. This
+// is a demo account with no real waitlist to protect, so that's fine.
+async function clearAllWaitlist() {
+  return deleteWaitlistKeys(await listWaitlistKeys());
+}
+
 async function reset(phone) {
   let cancelled = 0;
   for (;;) {
@@ -90,12 +132,18 @@ async function reset(phone) {
     await mcp('cancel_or_reschedule_appointment', { appointmentId: id, action: 'cancel' });
     cancelled++;
   }
-  console.log(cancelled ? `Cancelled ${cancelled} appointment(s) for ${phone}.` : `Nothing on file for ${phone} - already clean.`);
+  const waitlisted = await clearWaitlist(phone);
+  const parts = [];
+  if (cancelled) parts.push(`${cancelled} appointment(s)`);
+  if (waitlisted) parts.push(`${waitlisted} waitlist entry(ies)`);
+  console.log(parts.length ? `Cancelled ${parts.join(' and ')} for ${phone}.` : `Nothing on file for ${phone} - already clean.`);
 }
 
 async function book(date, start, service) {
   await reset(DEMO_PHONE);
   await reset(DECOY_PHONE);
+  const wiped = await clearAllWaitlist();
+  if (wiped) console.log(`Wiped ${wiped} waitlist entry(ies) (every number, not just the two known ones).`);
 
   const result = await mcp('book_appointment', {
     service,
