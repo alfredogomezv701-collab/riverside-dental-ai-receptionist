@@ -188,21 +188,15 @@ exposed the latency bug below), plus the per-tool `outcome` field, which groups 
 
 ## Demo script (about 10 minutes)
 
-1. **Architecture** (2 min): the diagram above; why the actor is used for slots and KV for the rest; why the MCP server
-   reaches the actor through the webhook function.
-2. **Live call, new caller** (3 min): greeting speak node, hand-off to Scheduling, `check_availability`, confirm, book.
-   Watch `telnyx-edge logs receptionist-webhook --type runtime --tail` and `... receptionist-mcp ...` alongside, and follow
-   one `request_id` through MCP -> webhook -> actor.
-3. **Live call, returning caller** (1 min): same number, greeted by name with the appointment (dynamic variables +
-   variable-comparison edge).
-4. **Race and fallback** (1 min, one phone): right before calling, run `node scripts/book-test-slot.mjs <date> <start>` to
-   book that slot under a decoy patient directly through MCP (no second phone, no inference cost). Then call and ask for
-   that same slot live: the assistant hits `slot_already_booked` and falls back to fresh availability on the call; show
-   the actor's `already_booked` in the logs. Flip `flag/waitlist_mode` in KV with
-   `telnyx-edge storage kv key put <ns> flag/waitlist_mode on` and show the deterministic waitlist path with no redeploy,
-   same call. Cancel the decoy appointment afterward (the script prints the exact command).
-5. **Observability + one bug** (2 min): pick bug 4 (latency): the log line, the change, the before/after numbers.
-6. **Tests** (1 min): `npm run test:live`, especially the no-LLM end-to-end backend test.
+1. **Architecture** — why the actor owns slot conflicts, KV owns everything else, and why the MCP
+   server reaches the actor through the webhook function rather than holding the binding itself.
+2. **Live call, new caller** — greeting, hand-off to Scheduling, check availability, confirm, book.
+3. **Live call, returning caller** — same number, greeted by name with the existing appointment.
+4. **Race and fallback** — a slot gets taken out from under a caller mid-call; the assistant falls
+   back to fresh availability instead of failing.
+5. **Waitlist** — the clinic is full for the day; a request gets queued instead of turned away.
+6. **Observability + one bug** — a real latency bug, the log line that exposed it, before/after.
+7. **Tests** — `npm run test:live`, especially the no-LLM end-to-end backend suite.
 
 ## OpenCode configuration
 
