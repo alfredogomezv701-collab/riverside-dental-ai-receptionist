@@ -9,8 +9,8 @@ Actors" and "Cross-function actor access") for why this exists as its own functi
 
 | File | Purpose |
 | --- | --- |
-| `telnyx.toml` | Declares the `DAY_SLOT` actor binding (mapped to the `DaySlotActor` class) and the function identity. |
-| `src/index.ts` | Entry point. Re-exports `DaySlotActor` so it ships with the function, and exposes a `GET /actor/stats?date=...` HTTP route for metrics — everything else goes through the actor's own methods, not HTTP. |
+| `telnyx.toml` | Declares the `DAY_SLOT` actor binding (mapped to the `DaySlotActor` class), the `ACTOR_PROXY_SECRET` secret, and the function identity. |
+| `src/index.ts` | Entry point. Re-exports `DaySlotActor` so it ships with the function, and exposes a bearer-protected `GET /actor/stats?date=...` HTTP route for metrics (same secret `receptionist-webhook`'s own `/actor/stats` requires) — everything else goes through the actor's own methods, not HTTP. |
 | `src/day_slot_actor.ts` | The actor class: `holdSlot`, `confirmSlot`, `releaseSlot`, `getStats`, and the alarm that auto-releases a stale hold. |
 | `test/` | Unit tests against the actor class and the HTTP entry point directly (no deploy needed). |
 

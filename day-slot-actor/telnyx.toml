@@ -6,6 +6,12 @@ compatibility_date = "2026-05-01"
 binding = "DAY_SLOT"
 type = "DaySlotActor"
 
+# Same bearer receptionist-webhook's own /actor/stats requires (secrets are account-wide, so this
+# is already set): telnyx-edge secrets add ACTOR_PROXY_SECRET "$(openssl rand -hex 32)"
+[[secrets]]
+binding = "ACTOR_PROXY_SECRET"
+name = "ACTOR_PROXY_SECRET"
+
 [edge_compute]
 func_id = "4cabbc85-0ef6-402a-a453-c1a59e991852"
 func_name = "day-slot-actor"

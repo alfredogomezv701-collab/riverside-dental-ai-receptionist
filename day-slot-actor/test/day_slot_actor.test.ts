@@ -337,20 +337,26 @@ describe('http surface', () => {
     assert.deepEqual(body.secrets, {});
   });
 
-  it('/actor/stats returns metrics for a given date', async () => {
+  function statsEnv(actor: DaySlotActor, secret = 'correct-secret') {
+    return {
+      DAY_SLOT: {
+        idFromName: () => ({ getStats: () => actor.getStats() }),
+      },
+      SECRETS: { get: async () => secret },
+    } as unknown as Env;
+  }
+
+  it('/actor/stats returns metrics for a given date, with the correct bearer', async () => {
     // We need an env with a real DAY_SLOT binding that routes to an actual actor instance.
     // The mock context approach doesn't give us a typed Env, so we simulate the binding.
     const actor = new DaySlotActor(createMockActorContext('2026-10-05'), {} as Env);
     await actor.holdSlot('09:00', 'caller-a');
     await actor.confirmSlot('09:00', 'caller-a');
 
-    const env = {
-      DAY_SLOT: {
-        idFromName: () => ({ getStats: () => actor.getStats() }),
-      },
-    } as unknown as Env;
-
-    const res = await entry.fetch(new Request('https://x.test/actor/stats?date=2026-10-05'), env);
+    const res = await entry.fetch(
+      new Request('https://x.test/actor/stats?date=2026-10-05', { headers: { authorization: 'Bearer correct-secret' } }),
+      statsEnv(actor),
+    );
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.conversions, 1);
@@ -358,8 +364,40 @@ describe('http surface', () => {
     assert.equal(body.conversionRate, '100.00%');
   });
 
-  it('/actor/stats rejects an invalid date', async () => {
-    const res = await entry.fetch(new Request('https://x.test/actor/stats?date=tomorrow'), {} as Env);
+  it('/actor/stats rejects a missing bearer', async () => {
+    const actor = new DaySlotActor(createMockActorContext('2026-10-05'), {} as Env);
+    const res = await entry.fetch(new Request('https://x.test/actor/stats?date=2026-10-05'), statsEnv(actor));
+    assert.equal(res.status, 401);
+  });
+
+  it('/actor/stats rejects a wrong bearer', async () => {
+    const actor = new DaySlotActor(createMockActorContext('2026-10-05'), {} as Env);
+    const res = await entry.fetch(
+      new Request('https://x.test/actor/stats?date=2026-10-05', { headers: { authorization: 'Bearer wrong' } }),
+      statsEnv(actor),
+    );
+    assert.equal(res.status, 401);
+  });
+
+  it('/actor/stats fails closed when the secret was never created', async () => {
+    const actor = new DaySlotActor(createMockActorContext('2026-10-05'), {} as Env);
+    const env = {
+      DAY_SLOT: { idFromName: () => ({ getStats: () => actor.getStats() }) },
+      SECRETS: { get: async () => { throw new Error('secret not found'); } },
+    } as unknown as Env;
+    const res = await entry.fetch(
+      new Request('https://x.test/actor/stats?date=2026-10-05', { headers: { authorization: 'Bearer anything' } }),
+      env,
+    );
+    assert.equal(res.status, 401);
+  });
+
+  it('/actor/stats rejects an invalid date, even with a correct bearer', async () => {
+    const actor = new DaySlotActor(createMockActorContext('2026-10-05'), {} as Env);
+    const res = await entry.fetch(
+      new Request('https://x.test/actor/stats?date=tomorrow', { headers: { authorization: 'Bearer correct-secret' } }),
+      statsEnv(actor),
+    );
     assert.equal(res.status, 400);
   });
 });

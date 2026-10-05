@@ -6,12 +6,14 @@ import type { DaySlotActor } from "./src/index";
 declare global {
   interface Env {
     DAY_SLOT: __TelnyxActorNamespace<DaySlotActor>;
+    SECRETS: { get(binding: "ACTOR_PROXY_SECRET"): Promise<string> };
   }
 }
 
 declare module "@telnyx/edge-runtime" {
   interface Env {
     DAY_SLOT: __TelnyxActorNamespace<DaySlotActor>;
+    SECRETS: { get(binding: "ACTOR_PROXY_SECRET"): Promise<string> };
   }
 }
 
