@@ -1,5 +1,9 @@
 # Architecture — Riverside Dental AI Receptionist
 
+A few sections below cite `docs/LEARNINGS.md` for more detail on a specific bug or finding. That
+file is a personal log kept locally and is not part of this repo (gitignored) — the citations are
+real, just not resolvable from a clone of this repo alone.
+
 ## Use case
 
 Phone line for a dental clinic. Callers can book, reschedule, or cancel an appointment,

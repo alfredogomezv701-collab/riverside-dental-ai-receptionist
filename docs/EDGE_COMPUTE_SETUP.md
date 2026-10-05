@@ -46,7 +46,7 @@ Function names: 1–64 chars, alphanumeric + dashes, no leading/trailing dash.
 | Piece | CLI approach |
 |---|---|
 | Dynamic webhook (Edge Function) | `new-func --language=ts` — scaffold, don't clone an example verbatim, since it's mostly custom logic (caller lookup, KV cache, calls into the Actor) |
-| MCP server | `new-func --from-dir` off `examples/ts/mcp-server` — closest match to "custom MCP server," then adapt the 3 scheduling tools in |
+| MCP server | `new-func --from-dir` off `examples/ts/mcp-server` — closest match to "custom MCP server," then adapt the scheduling tools in (ended up as 4: check_availability, book_appointment, cancel_or_reschedule_appointment, join_waitlist) |
 | `DaySlotActor` | `new-func --actor --language=ts` |
 | KV namespace | `storage kv create` |
 
@@ -169,8 +169,8 @@ telnyx-edge rollback <function> <revision-id>
 
 - [ ] Exact Windows dev setup for `telnyx-edge` (native binary vs. WSL) — check releases
       page
-- [ ] Whether the MCP server needs `TELNYX_API_KEY` at all (only if a tool calls the
-      Telnyx API directly; our 3 scheduling tools may not need it if the calendar is
-      mocked)
+- [x] Whether the MCP server needs `TELNYX_API_KEY` at all: no. None of the four scheduling
+      tools (check_availability, book_appointment, cancel_or_reschedule_appointment,
+      join_waitlist) call the Telnyx API directly; the calendar is mocked.
 - [ ] Actor alarm API specifics — confirm against the Stateful Actors docs once scaffolded
       (`telnyx-edge new-func --actor --help`, and the generated actor's boilerplate)

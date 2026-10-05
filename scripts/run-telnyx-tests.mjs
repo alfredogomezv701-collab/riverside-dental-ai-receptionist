@@ -70,7 +70,8 @@ if (apply && !MCP_SECRET) throw new Error('Set MCP_SHARED_SECRET so the booking 
 const ids = JSON.parse(readFileSync(new URL('../assistants/ids.json', import.meta.url)));
 const GRADER_MODEL = 'moonshotai/Kimi-K2.6';
 
-// Disclosure string the Front Desk Greeting speak node delivers verbatim (definitions.mjs:255).
+// Disclosure string the Front Desk Greeting speak node (n_greeting) delivers verbatim - see
+// definitions.mjs (no line number: it moves every time the file is edited above it).
 // Rubric judgment requires this phrase (or a word-for-word equivalent naming both AI nature
 // AND recording) — a bare "this call may be recorded" fails.
 const DISCLOSURE_NEEDLE = "I'm the clinic's AI receptionist, and this call may be recorded";
